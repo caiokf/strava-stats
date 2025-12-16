@@ -94,24 +94,55 @@ fun ActivityCard(activity: ActivityUiModel) {
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-            Text(
-                text = activity.name,
-                style = MaterialTheme.typography.titleMedium
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = activity.type,
-                style = MaterialTheme.typography.bodySmall
-            )
-            Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = "Distance: ${activity.distance}")
-                Text(text = "Time: ${activity.duration}")
+                Text(
+                    text = activity.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = activity.type,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = activity.date,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                StatItem(label = "Distance", value = activity.distance)
+                StatItem(label = "Time", value = activity.duration)
+                StatItem(label = "Elevation", value = activity.elevation)
             }
         }
+    }
+}
+
+@Composable
+fun StatItem(label: String, value: String) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleSmall
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -121,6 +152,7 @@ data class ActivityUiModel(
     val type: String,
     val distance: String,
     val duration: String,
+    val elevation: String,
     val date: String
 )
 

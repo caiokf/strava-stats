@@ -18,6 +18,81 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY!
 );
 
+interface StravaLap {
+  id: number;
+  activity: { id: number };
+  athlete: { id: number };
+  name: string;
+  elapsed_time: number;
+  moving_time: number;
+  start_date: string;
+  start_date_local: string;
+  distance: number;
+  start_index: number;
+  end_index: number;
+  total_elevation_gain: number;
+  average_speed: number;
+  max_speed: number;
+  average_cadence?: number;
+  average_watts?: number;
+  device_watts?: boolean;
+  average_heartrate?: number;
+  max_heartrate?: number;
+  lap_index: number;
+  split?: number;
+  pace_zone?: number;
+}
+
+interface StravaSplit {
+  distance: number;
+  elapsed_time: number;
+  elevation_difference: number;
+  moving_time: number;
+  split: number;
+  average_speed: number;
+  average_grade_adjusted_speed?: number;
+  average_heartrate?: number;
+  pace_zone?: number;
+}
+
+interface StravaZoneDistribution {
+  min: number;
+  max: number;
+  time: number;
+}
+
+interface StravaZone {
+  type: string;
+  sensor_based: boolean;
+  score?: number;
+  points?: number;
+  custom_zones?: boolean;
+  max?: number;
+  distribution_buckets: StravaZoneDistribution[];
+}
+
+// Photos included in DetailedActivity response
+interface StravaPhotos {
+  primary?: {
+    id?: number;
+    unique_id?: string;
+    urls?: Record<string, string>;
+    source?: number;
+  };
+  count: number;
+}
+
+// Stream data from GET /activities/{id}/streams
+interface StravaStream {
+  type: string;
+  data: (number | number[] | boolean)[];
+  series_type?: string;
+  original_size?: number;
+  resolution?: string;
+}
+
+type StravaStreamsResponse = Record<string, StravaStream>;
+
 interface StravaActivity {
   id: number;
   name: string;
@@ -61,9 +136,17 @@ interface StravaActivity {
   suffer_score?: number;
   description?: string;
   workout_type?: number;
+  // Detailed activity fields
+  photos?: StravaPhotos;
+  laps?: StravaLap[];
+  splits_metric?: StravaSplit[];
+  splits_standard?: StravaSplit[];
 }
 
-async function refreshToken(athleteId: number, refreshToken: string): Promise<string | null> {
+async function refreshToken(
+  athleteId: number,
+  refreshToken: string
+): Promise<string | null> {
   console.log("Refreshing access token...");
 
   const response = await fetch("https://www.strava.com/oauth/token", {
@@ -82,7 +165,11 @@ async function refreshToken(athleteId: number, refreshToken: string): Promise<st
     return null;
   }
 
-  const data = await response.json() as { access_token: string; refresh_token: string; expires_at: number };
+  const data = (await response.json()) as {
+    access_token: string;
+    refresh_token: string;
+    expires_at: number;
+  };
 
   // Update tokens in database
   await supabase
@@ -120,17 +207,23 @@ async function getAccessToken(athleteId: number): Promise<string | null> {
 }
 
 async function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url: string, options: RequestInit, retries = 3): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  retries = 3
+): Promise<Response> {
   for (let i = 0; i < retries; i++) {
     const response = await fetch(url, options);
 
     if (response.status === 429) {
       // Rate limited - wait 15 minutes and retry
-      const waitTime = 15 * 60 * 1000; // 15 minutes
-      console.log(`\n⏳ Rate limited. Waiting 15 minutes before retrying... (${new Date().toLocaleTimeString()})`);
+      const waitTime = 1 * 60 * 1000; // 1 minute
+      console.log(
+        `\n⏳ Rate limited. Waiting 1 minute before retrying... (${new Date().toLocaleTimeString()})`
+      );
       await sleep(waitTime);
       continue;
     }
@@ -141,7 +234,11 @@ async function fetchWithRetry(url: string, options: RequestInit, retries = 3): P
   throw new Error("Max retries exceeded");
 }
 
-async function fetchActivitiesPage(accessToken: string, page: number, perPage: number = 100): Promise<StravaActivity[]> {
+async function fetchActivitiesPage(
+  accessToken: string,
+  page: number,
+  perPage: number = 100
+): Promise<StravaActivity[]> {
   const response = await fetchWithRetry(
     `https://www.strava.com/api/v3/athlete/activities?page=${page}&per_page=${perPage}`,
     {
@@ -157,7 +254,10 @@ async function fetchActivitiesPage(accessToken: string, page: number, perPage: n
   return response.json() as Promise<StravaActivity[]>;
 }
 
-async function fetchActivityDetails(activityId: number, accessToken: string): Promise<StravaActivity | null> {
+async function fetchActivityDetails(
+  activityId: number,
+  accessToken: string
+): Promise<StravaActivity | null> {
   const response = await fetchWithRetry(
     `https://www.strava.com/api/v3/activities/${activityId}`,
     {
@@ -166,11 +266,94 @@ async function fetchActivityDetails(activityId: number, accessToken: string): Pr
   );
 
   if (!response.ok) {
-    console.error(`Failed to fetch activity ${activityId}:`, await response.text());
+    console.error(
+      `Failed to fetch activity ${activityId}:`,
+      await response.text()
+    );
     return null;
   }
 
   return response.json() as Promise<StravaActivity>;
+}
+
+async function fetchActivityZones(
+  activityId: number,
+  accessToken: string
+): Promise<StravaZone[]> {
+  const response = await fetchWithRetry(
+    `https://www.strava.com/api/v3/activities/${activityId}/zones`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    // Zones may not be available for all activities (e.g., no HR data)
+    return [];
+  }
+
+  return response.json() as Promise<StravaZone[]>;
+}
+
+const STREAM_TYPES = [
+  "time",
+  "latlng",
+  "distance",
+  "altitude",
+  "velocity_smooth",
+  "heartrate",
+  "cadence",
+  "watts",
+  "temp",
+  "moving",
+  "grade_smooth",
+];
+
+async function fetchActivityStreams(
+  activityId: number,
+  accessToken: string
+): Promise<StravaStreamsResponse | null> {
+  const keys = STREAM_TYPES.join(",");
+  const response = await fetchWithRetry(
+    `https://www.strava.com/api/v3/activities/${activityId}/streams?keys=${keys}&key_by_type=true`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    // Streams may not be available for all activities (e.g., manual entries)
+    return null;
+  }
+
+  return response.json() as Promise<StravaStreamsResponse>;
+}
+
+async function storeActivityStreams(
+  activityId: number,
+  streams: StravaStreamsResponse
+): Promise<void> {
+  const streamRecords = Object.entries(streams).map(([streamType, stream]) => ({
+    activity_id: activityId,
+    stream_type: streamType,
+    series_type: stream.series_type || null,
+    original_size: stream.original_size || null,
+    resolution: stream.resolution || null,
+    data: stream.data,
+  }));
+
+  if (streamRecords.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("activity_streams")
+    .upsert(streamRecords, { onConflict: "activity_id,stream_type" });
+
+  if (error) {
+    console.error(`Failed to store streams for activity ${activityId}:`, error);
+    throw error;
+  }
 }
 
 async function activityExists(activityId: number): Promise<boolean> {
@@ -183,7 +366,11 @@ async function activityExists(activityId: number): Promise<boolean> {
   return data !== null;
 }
 
-async function storeActivity(activity: StravaActivity, athleteId: number): Promise<void> {
+async function storeActivity(
+  activity: StravaActivity,
+  athleteId: number,
+  zones: StravaZone[]
+): Promise<void> {
   const { error } = await supabase.from("activities").upsert({
     id: activity.id,
     strava_athlete_id: athleteId,
@@ -226,6 +413,11 @@ async function storeActivity(activity: StravaActivity, athleteId: number): Promi
     suffer_score: activity.suffer_score,
     description: activity.description,
     workout_type: activity.workout_type,
+    photos: activity.photos || null,
+    laps: activity.laps || null,
+    splits_metric: activity.splits_metric || null,
+    splits_standard: activity.splits_standard || null,
+    zones: zones.length > 0 ? zones : null,
     raw_data: activity,
   });
 
@@ -264,25 +456,48 @@ async function backfillActivities(athleteId: number) {
         // Check if activity already exists in database
         const exists = await activityExists(summaryActivity.id);
         if (exists) {
-          console.log(`  ⏭ Skipping (already exists): ${summaryActivity.name} (${summaryActivity.id})`);
+          console.log(
+            `  ⏭ Skipping (already exists): ${summaryActivity.name} (${summaryActivity.id})`
+          );
           continue;
         }
 
         // Fetch full activity details
-        console.log(`  Fetching details for: ${summaryActivity.name} (${summaryActivity.id})`);
-        const fullActivity = await fetchActivityDetails(summaryActivity.id, accessToken);
+        console.log(
+          `  Fetching details for: ${summaryActivity.name} (${summaryActivity.id})`
+        );
+        const fullActivity = await fetchActivityDetails(
+          summaryActivity.id,
+          accessToken
+        );
 
         if (fullActivity) {
-          await storeActivity(fullActivity, athleteId);
+          // Fetch zones and streams (require separate API calls)
+          const [zones, streams] = await Promise.all([
+            fetchActivityZones(summaryActivity.id, accessToken),
+            fetchActivityStreams(summaryActivity.id, accessToken),
+          ]);
+
+          await storeActivity(fullActivity, athleteId, zones);
+
+          if (streams) {
+            await storeActivityStreams(summaryActivity.id, streams);
+          }
+
           totalStored++;
-          console.log(`  ✓ Stored: ${fullActivity.name}`);
+          const zoneInfo = zones.length > 0 ? ` (${zones.length} zones)` : "";
+          const streamInfo = streams ? ` (${Object.keys(streams).length} streams)` : "";
+          console.log(`  ✓ Stored: ${fullActivity.name}${zoneInfo}${streamInfo}`);
         }
 
         // Rate limiting: Strava allows 100 requests per 15 minutes, 1000 per day
         // Add a small delay between requests
-        await sleep(200);
+        //await sleep(200);
       } catch (error) {
-        console.error(`  ✗ Failed to process activity ${summaryActivity.id}:`, error);
+        console.error(
+          `  ✗ Failed to process activity ${summaryActivity.id}:`,
+          error
+        );
       }
     }
 

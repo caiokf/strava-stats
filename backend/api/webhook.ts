@@ -33,6 +33,81 @@ interface StravaWebhookEvent {
   updates?: Record<string, unknown>;
 }
 
+interface StravaLap {
+  id: number;
+  activity: { id: number };
+  athlete: { id: number };
+  name: string;
+  elapsed_time: number;
+  moving_time: number;
+  start_date: string;
+  start_date_local: string;
+  distance: number;
+  start_index: number;
+  end_index: number;
+  total_elevation_gain: number;
+  average_speed: number;
+  max_speed: number;
+  average_cadence?: number;
+  average_watts?: number;
+  device_watts?: boolean;
+  average_heartrate?: number;
+  max_heartrate?: number;
+  lap_index: number;
+  split?: number;
+  pace_zone?: number;
+}
+
+interface StravaSplit {
+  distance: number;
+  elapsed_time: number;
+  elevation_difference: number;
+  moving_time: number;
+  split: number;
+  average_speed: number;
+  average_grade_adjusted_speed?: number;
+  average_heartrate?: number;
+  pace_zone?: number;
+}
+
+interface StravaZoneDistribution {
+  min: number;
+  max: number;
+  time: number;
+}
+
+interface StravaZone {
+  type: string;
+  sensor_based: boolean;
+  score?: number;
+  points?: number;
+  custom_zones?: boolean;
+  max?: number;
+  distribution_buckets: StravaZoneDistribution[];
+}
+
+// Photos included in DetailedActivity response
+interface StravaPhotos {
+  primary?: {
+    id?: number;
+    unique_id?: string;
+    urls?: Record<string, string>;
+    source?: number;
+  };
+  count: number;
+}
+
+// Stream data from GET /activities/{id}/streams
+interface StravaStream {
+  type: string;
+  data: (number | number[] | boolean)[];
+  series_type?: string;
+  original_size?: number;
+  resolution?: string;
+}
+
+type StravaStreamsResponse = Record<string, StravaStream>;
+
 interface StravaActivity {
   id: number;
   name: string;
@@ -76,6 +151,11 @@ interface StravaActivity {
   suffer_score?: number;
   description?: string;
   workout_type?: number;
+  // Detailed activity fields
+  photos?: StravaPhotos;
+  laps?: StravaLap[];
+  splits_metric?: StravaSplit[];
+  splits_standard?: StravaSplit[];
 }
 
 async function getStravaAccessToken(athleteId: number): Promise<string | null> {
@@ -169,9 +249,92 @@ async function fetchStravaActivity(
   return response.json();
 }
 
+async function fetchStravaActivityZones(
+  activityId: number,
+  accessToken: string
+): Promise<StravaZone[]> {
+  const response = await fetch(
+    `https://www.strava.com/api/v3/activities/${activityId}/zones`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    // Zones may not be available for all activities (e.g., no HR data)
+    console.log("Could not fetch activity zones (may not be available)");
+    return [];
+  }
+
+  return response.json();
+}
+
+const STREAM_TYPES = [
+  "time",
+  "latlng",
+  "distance",
+  "altitude",
+  "velocity_smooth",
+  "heartrate",
+  "cadence",
+  "watts",
+  "temp",
+  "moving",
+  "grade_smooth",
+];
+
+async function fetchStravaActivityStreams(
+  activityId: number,
+  accessToken: string
+): Promise<StravaStreamsResponse | null> {
+  const keys = STREAM_TYPES.join(",");
+  const response = await fetch(
+    `https://www.strava.com/api/v3/activities/${activityId}/streams?keys=${keys}&key_by_type=true`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
+
+  if (!response.ok) {
+    // Streams may not be available for all activities (e.g., manual entries)
+    console.log("Could not fetch activity streams (may not be available)");
+    return null;
+  }
+
+  return response.json();
+}
+
+async function storeActivityStreams(
+  activityId: number,
+  streams: StravaStreamsResponse
+): Promise<void> {
+  const streamRecords = Object.entries(streams).map(([streamType, stream]) => ({
+    activity_id: activityId,
+    stream_type: streamType,
+    series_type: stream.series_type || null,
+    original_size: stream.original_size || null,
+    resolution: stream.resolution || null,
+    data: stream.data,
+  }));
+
+  if (streamRecords.length === 0) {
+    return;
+  }
+
+  const { error } = await getSupabase()
+    .from("activity_streams")
+    .upsert(streamRecords, { onConflict: "activity_id,stream_type" });
+
+  if (error) {
+    console.error("Failed to store activity streams:", error);
+    throw error;
+  }
+}
+
 async function storeActivity(
   activity: StravaActivity,
-  athleteId: number
+  athleteId: number,
+  zones: StravaZone[]
 ): Promise<void> {
   const { error } = await getSupabase().from("activities").upsert({
     id: activity.id,
@@ -215,6 +378,11 @@ async function storeActivity(
     suffer_score: activity.suffer_score,
     description: activity.description,
     workout_type: activity.workout_type,
+    photos: activity.photos || null,
+    laps: activity.laps || null,
+    splits_metric: activity.splits_metric || null,
+    splits_standard: activity.splits_standard || null,
+    zones: zones.length > 0 ? zones : null,
     raw_data: activity,
   });
 
@@ -282,7 +450,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log("Activity fetched from Strava:", activity);
 
         if (activity) {
-          await storeActivity(activity, event.owner_id);
+          // Fetch zones and streams (require separate API calls)
+          console.log("Fetching activity zones and streams");
+          const [zones, streams] = await Promise.all([
+            fetchStravaActivityZones(event.object_id, accessToken),
+            fetchStravaActivityStreams(event.object_id, accessToken),
+          ]);
+          console.log(`Fetched ${zones.length} zone types, ${streams ? Object.keys(streams).length : 0} stream types`);
+
+          await storeActivity(activity, event.owner_id, zones);
+
+          if (streams) {
+            await storeActivityStreams(event.object_id, streams);
+          }
           console.log(`Stored activity ${event.object_id}`);
         }
       } else if (event.aspect_type === "delete") {
