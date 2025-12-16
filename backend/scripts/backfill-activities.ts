@@ -82,7 +82,7 @@ async function refreshToken(athleteId: number, refreshToken: string): Promise<st
     return null;
   }
 
-  const data = await response.json();
+  const data = await response.json() as { access_token: string; refresh_token: string; expires_at: number };
 
   // Update tokens in database
   await supabase
@@ -132,7 +132,7 @@ async function fetchActivitiesPage(accessToken: string, page: number, perPage: n
     return [];
   }
 
-  return response.json();
+  return response.json() as Promise<StravaActivity[]>;
 }
 
 async function fetchActivityDetails(activityId: number, accessToken: string): Promise<StravaActivity | null> {
@@ -148,7 +148,7 @@ async function fetchActivityDetails(activityId: number, accessToken: string): Pr
     return null;
   }
 
-  return response.json();
+  return response.json() as Promise<StravaActivity>;
 }
 
 async function storeActivity(activity: StravaActivity, athleteId: number): Promise<void> {
