@@ -63,11 +63,16 @@ interface StravaActivity {
 
 async function getStravaAccessToken(athleteId: number): Promise<string | null> {
   // Get stored token from database
-  const { data: user } = await supabase
+  const { data: user, error } = await supabase
     .from('users')
     .select('access_token, refresh_token, token_expires_at')
     .eq('strava_athlete_id', athleteId)
     .single();
+
+  if (error) {
+    console.error(`Database error for athlete ${athleteId}:`, error);
+    return null;
+  }
 
   if (!user) {
     console.error(`No user found for athlete ${athleteId}`);
