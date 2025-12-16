@@ -1,14 +1,20 @@
 // Force redeploy: 2025-12-16T03:15
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 let supabase: SupabaseClient;
 
 function getSupabase() {
   if (!supabase) {
-    console.log('Initializing Supabase client...');
-    console.log('SUPABASE_URL:', process.env.SUPABASE_URL?.slice(0, 30) + '...');
-    console.log('SUPABASE_SERVICE_KEY exists:', !!process.env.SUPABASE_SERVICE_KEY);
+    console.log("Initializing Supabase client...");
+    console.log(
+      "SUPABASE_URL:",
+      process.env.SUPABASE_URL?.slice(0, 30) + "..."
+    );
+    console.log(
+      "SUPABASE_SERVICE_KEY exists:",
+      !!process.env.SUPABASE_SERVICE_KEY
+    );
     supabase = createClient(
       process.env.SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_KEY!
@@ -18,9 +24,9 @@ function getSupabase() {
 }
 
 interface StravaWebhookEvent {
-  object_type: 'activity' | 'athlete';
+  object_type: "activity" | "athlete";
   object_id: number;
-  aspect_type: 'create' | 'update' | 'delete';
+  aspect_type: "create" | "update" | "delete";
   owner_id: number;
   subscription_id: number;
   event_time: number;
@@ -77,12 +83,16 @@ async function getStravaAccessToken(athleteId: number): Promise<string | null> {
 
   // Get stored token from database
   const { data: user, error } = await getSupabase()
-    .from('users')
-    .select('access_token, refresh_token, token_expires_at')
-    .eq('strava_athlete_id', athleteId)
+    .from("users")
+    .select("access_token, refresh_token, token_expires_at")
+    .eq("strava_athlete_id", athleteId)
     .single();
 
-  console.log(`Query result - data: ${JSON.stringify(user)}, error: ${JSON.stringify(error)}`);
+  console.log(
+    `Query result - data: ${JSON.stringify(user)}, error: ${JSON.stringify(
+      error
+    )}`
+  );
 
   if (error) {
     console.error(`Database error for athlete ${athleteId}:`, error);
@@ -105,20 +115,23 @@ async function getStravaAccessToken(athleteId: number): Promise<string | null> {
   return user.access_token;
 }
 
-async function refreshStravaToken(athleteId: number, refreshToken: string): Promise<string | null> {
-  const response = await fetch('https://www.strava.com/oauth/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+async function refreshStravaToken(
+  athleteId: number,
+  refreshToken: string
+): Promise<string | null> {
+  const response = await fetch("https://www.strava.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       client_id: process.env.STRAVA_CLIENT_ID,
       client_secret: process.env.STRAVA_CLIENT_SECRET,
-      grant_type: 'refresh_token',
+      grant_type: "refresh_token",
       refresh_token: refreshToken,
     }),
   });
 
   if (!response.ok) {
-    console.error('Failed to refresh token:', await response.text());
+    console.error("Failed to refresh token:", await response.text());
     return null;
   }
 
@@ -126,18 +139,21 @@ async function refreshStravaToken(athleteId: number, refreshToken: string): Prom
 
   // Update tokens in database
   await getSupabase()
-    .from('users')
+    .from("users")
     .update({
       access_token: data.access_token,
       refresh_token: data.refresh_token,
       token_expires_at: new Date(data.expires_at * 1000).toISOString(),
     })
-    .eq('strava_athlete_id', athleteId);
+    .eq("strava_athlete_id", athleteId);
 
   return data.access_token;
 }
 
-async function fetchStravaActivity(activityId: number, accessToken: string): Promise<StravaActivity | null> {
+async function fetchStravaActivity(
+  activityId: number,
+  accessToken: string
+): Promise<StravaActivity | null> {
   const response = await fetch(
     `https://www.strava.com/api/v3/activities/${activityId}`,
     {
@@ -146,15 +162,18 @@ async function fetchStravaActivity(activityId: number, accessToken: string): Pro
   );
 
   if (!response.ok) {
-    console.error('Failed to fetch activity:', await response.text());
+    console.error("Failed to fetch activity:", await response.text());
     return null;
   }
 
   return response.json();
 }
 
-async function storeActivity(activity: StravaActivity, athleteId: number): Promise<void> {
-  const { error } = await getSupabase().from('activities').upsert({
+async function storeActivity(
+  activity: StravaActivity,
+  athleteId: number
+): Promise<void> {
+  const { error } = await getSupabase().from("activities").upsert({
     id: activity.id,
     strava_athlete_id: athleteId,
     name: activity.name,
@@ -200,72 +219,84 @@ async function storeActivity(activity: StravaActivity, athleteId: number): Promi
   });
 
   if (error) {
-    console.error('Failed to store activity:', error);
+    console.error("Failed to store activity:", error);
     throw error;
   }
 }
 
 async function deleteActivity(activityId: number): Promise<void> {
   const { error } = await getSupabase()
-    .from('activities')
+    .from("activities")
     .delete()
-    .eq('id', activityId);
+    .eq("id", activityId);
 
   if (error) {
-    console.error('Failed to delete activity:', error);
+    console.error("Failed to delete activity:", error);
     throw error;
   }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // GET - Webhook verification
-  if (req.method === 'GET') {
-    const mode = req.query['hub.mode'];
-    const challenge = req.query['hub.challenge'];
-    const verifyToken = req.query['hub.verify_token'];
+  if (req.method === "GET") {
+    const mode = req.query["hub.mode"];
+    const challenge = req.query["hub.challenge"];
+    const verifyToken = req.query["hub.verify_token"];
 
-    if (mode === 'subscribe' && verifyToken === process.env.STRAVA_VERIFY_TOKEN) {
-      console.log('Webhook verified');
-      return res.status(200).json({ 'hub.challenge': challenge });
+    if (
+      mode === "subscribe" &&
+      verifyToken === process.env.STRAVA_VERIFY_TOKEN
+    ) {
+      console.log("Webhook verified");
+      return res.status(200).json({ "hub.challenge": challenge });
     }
 
-    return res.status(403).send('Verification failed');
+    return res.status(403).send("Verification failed");
   }
 
   // POST - Webhook event
-  if (req.method === 'POST') {
+  if (req.method === "POST") {
     const event = req.body as StravaWebhookEvent;
-    console.log('Received webhook event:', event);
+    console.log("Received webhook event:", event);
 
     // Only process activity events
-    if (event.object_type !== 'activity') {
-      return res.status(200).send('OK');
+    if (event.object_type !== "activity") {
+      console.log("Not an activity event");
+      return res.status(200).send("OK");
     }
 
     try {
-      if (event.aspect_type === 'create' || event.aspect_type === 'update') {
+      if (event.aspect_type === "create" || event.aspect_type === "update") {
+        console.log("Processing create or update event");
         const accessToken = await getStravaAccessToken(event.owner_id);
         if (!accessToken) {
-          console.error('No access token for athlete:', event.owner_id);
-          return res.status(200).send('OK'); // Still return 200 to Strava
+          console.error("No access token for athlete:", event.owner_id);
+          return res.status(200).send("OK"); // Still return 200 to Strava
         }
 
-        const activity = await fetchStravaActivity(event.object_id, accessToken);
+        console.log("Fetching activity from Strava");
+        const activity = await fetchStravaActivity(
+          event.object_id,
+          accessToken
+        );
+        console.log("Activity fetched from Strava:", activity);
+
         if (activity) {
           await storeActivity(activity, event.owner_id);
           console.log(`Stored activity ${event.object_id}`);
         }
-      } else if (event.aspect_type === 'delete') {
+      } else if (event.aspect_type === "delete") {
+        console.log("Processing delete event");
         await deleteActivity(event.object_id);
         console.log(`Deleted activity ${event.object_id}`);
       }
 
-      return res.status(200).send('OK');
+      return res.status(200).send("OK");
     } catch (error) {
-      console.error('Error processing webhook:', error);
-      return res.status(200).send('OK'); // Still return 200 to avoid retries
+      console.error("Error processing webhook:", error);
+      return res.status(200).send("OK"); // Still return 200 to avoid retries
     }
   }
 
-  return res.status(405).send('Method not allowed');
+  return res.status(405).send("Method not allowed");
 }
