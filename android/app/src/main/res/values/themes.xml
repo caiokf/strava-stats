@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.StravaStats" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/strava_orange</item>
+    </style>
+
+    <color name="strava_orange">#FC4C02</color>
+</resources>
