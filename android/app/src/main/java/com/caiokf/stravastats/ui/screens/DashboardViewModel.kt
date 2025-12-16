@@ -7,6 +7,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 @HiltViewModel
@@ -31,10 +33,11 @@ class DashboardViewModel @Inject constructor(
                         ActivityUiModel(
                             id = activity.id,
                             name = activity.name,
-                            type = activity.type,
+                            type = activity.sportType ?: activity.type,
                             distance = formatDistance(activity.distance),
                             duration = formatDuration(activity.movingTime),
-                            date = activity.startDate
+                            elevation = formatElevation(activity.totalElevationGain),
+                            date = formatDate(activity.startDateLocal ?: activity.startDate)
                         )
                     }
                 )
@@ -58,6 +61,24 @@ class DashboardViewModel @Inject constructor(
             "${hours}h ${minutes}m"
         } else {
             "${minutes}m"
+        }
+    }
+
+    private fun formatElevation(meters: Double?): String {
+        return if (meters != null && meters > 0) {
+            String.format("%.0f m", meters)
+        } else {
+            "-"
+        }
+    }
+
+    private fun formatDate(isoDate: String): String {
+        return try {
+            val parsed = ZonedDateTime.parse(isoDate)
+            val formatter = DateTimeFormatter.ofPattern("MMM d, yyyy")
+            parsed.format(formatter)
+        } catch (e: Exception) {
+            isoDate.take(10)
         }
     }
 }
