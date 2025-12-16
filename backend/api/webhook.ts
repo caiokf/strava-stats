@@ -1,3 +1,4 @@
+// Force redeploy: 2025-12-16T03:15
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
