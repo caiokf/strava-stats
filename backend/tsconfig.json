@@ -10,8 +10,14 @@
     "outDir": "./dist",
     "rootDir": "./",
     "resolveJsonModule": true,
-    "declaration": true
+    "declaration": true,
+    "moduleResolution": "node"
   },
-  "include": ["api/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["api/**/*", "scripts/**/*"],
+  "exclude": ["node_modules", "dist"],
+  "ts-node": {
+    "compilerOptions": {
+      "module": "commonjs"
+    }
+  }
 }
