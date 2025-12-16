@@ -1,0 +1,51 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# MCP
+.mcp.json
+
+# Rust
+backend/target/
+**/*.rs.bk
+Cargo.lock
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/*.apk
+android/*.aab
+android/app/google-services.json
+
+# Kotlin
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Node (if any tooling)
+node_modules/
+
+# Vercel
+.vercel/
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
