@@ -1,10 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+let supabase: SupabaseClient;
+
+function getSupabase() {
+  if (!supabase) {
+    console.log('Initializing Supabase client...');
+    console.log('SUPABASE_URL:', process.env.SUPABASE_URL?.slice(0, 30) + '...');
+    console.log('SUPABASE_SERVICE_KEY exists:', !!process.env.SUPABASE_SERVICE_KEY);
+    supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_KEY!
+    );
+  }
+  return supabase;
+}
 
 interface StravaWebhookEvent {
   object_type: 'activity' | 'athlete';
@@ -62,10 +72,10 @@ interface StravaActivity {
 }
 
 async function getStravaAccessToken(athleteId: number): Promise<string | null> {
-  console.log(`Looking up athlete ${athleteId}, SUPABASE_URL: ${process.env.SUPABASE_URL?.slice(0, 30)}...`);
+  console.log(`Looking up athlete ${athleteId}`);
 
   // Get stored token from database
-  const { data: user, error } = await supabase
+  const { data: user, error } = await getSupabase()
     .from('users')
     .select('access_token, refresh_token, token_expires_at')
     .eq('strava_athlete_id', athleteId)
@@ -114,7 +124,7 @@ async function refreshStravaToken(athleteId: number, refreshToken: string): Prom
   const data = await response.json();
 
   // Update tokens in database
-  await supabase
+  await getSupabase()
     .from('users')
     .update({
       access_token: data.access_token,
@@ -143,7 +153,7 @@ async function fetchStravaActivity(activityId: number, accessToken: string): Pro
 }
 
 async function storeActivity(activity: StravaActivity, athleteId: number): Promise<void> {
-  const { error } = await supabase.from('activities').upsert({
+  const { error } = await getSupabase().from('activities').upsert({
     id: activity.id,
     strava_athlete_id: athleteId,
     name: activity.name,
@@ -195,7 +205,7 @@ async function storeActivity(activity: StravaActivity, athleteId: number): Promi
 }
 
 async function deleteActivity(activityId: number): Promise<void> {
-  const { error } = await supabase
+  const { error } = await getSupabase()
     .from('activities')
     .delete()
     .eq('id', activityId);
