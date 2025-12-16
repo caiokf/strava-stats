@@ -1,14 +1,22 @@
 {
   "builds": [
     {
-      "src": "src/main.rs",
+      "src": "api/webhook.rs",
+      "use": "@vercel/rust"
+    },
+    {
+      "src": "api/activities.rs",
       "use": "@vercel/rust"
     }
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/src/main.rs"
+      "src": "/api/webhook",
+      "dest": "/api/webhook.rs"
+    },
+    {
+      "src": "/api/activities",
+      "dest": "/api/activities.rs"
     }
   ]
 }
