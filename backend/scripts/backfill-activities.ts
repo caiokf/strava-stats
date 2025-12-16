@@ -119,8 +119,30 @@ async function getAccessToken(athleteId: number): Promise<string | null> {
   return user.access_token;
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    const response = await fetch(url, options);
+
+    if (response.status === 429) {
+      // Rate limited - wait 15 minutes and retry
+      const waitTime = 15 * 60 * 1000; // 15 minutes
+      console.log(`\n⏳ Rate limited. Waiting 15 minutes before retrying... (${new Date().toLocaleTimeString()})`);
+      await sleep(waitTime);
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new Error("Max retries exceeded");
+}
+
 async function fetchActivitiesPage(accessToken: string, page: number, perPage: number = 100): Promise<StravaActivity[]> {
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `https://www.strava.com/api/v3/athlete/activities?page=${page}&per_page=${perPage}`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -136,7 +158,7 @@ async function fetchActivitiesPage(accessToken: string, page: number, perPage: n
 }
 
 async function fetchActivityDetails(activityId: number, accessToken: string): Promise<StravaActivity | null> {
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `https://www.strava.com/api/v3/activities/${activityId}`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -149,6 +171,16 @@ async function fetchActivityDetails(activityId: number, accessToken: string): Pr
   }
 
   return response.json() as Promise<StravaActivity>;
+}
+
+async function activityExists(activityId: number): Promise<boolean> {
+  const { data } = await supabase
+    .from("activities")
+    .select("id")
+    .eq("id", activityId)
+    .single();
+
+  return data !== null;
 }
 
 async function storeActivity(activity: StravaActivity, athleteId: number): Promise<void> {
@@ -229,6 +261,13 @@ async function backfillActivities(athleteId: number) {
 
     for (const summaryActivity of activities) {
       try {
+        // Check if activity already exists in database
+        const exists = await activityExists(summaryActivity.id);
+        if (exists) {
+          console.log(`  ⏭ Skipping (already exists): ${summaryActivity.name} (${summaryActivity.id})`);
+          continue;
+        }
+
         // Fetch full activity details
         console.log(`  Fetching details for: ${summaryActivity.name} (${summaryActivity.id})`);
         const fullActivity = await fetchActivityDetails(summaryActivity.id, accessToken);
@@ -241,7 +280,7 @@ async function backfillActivities(athleteId: number) {
 
         // Rate limiting: Strava allows 100 requests per 15 minutes, 1000 per day
         // Add a small delay between requests
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await sleep(200);
       } catch (error) {
         console.error(`  ✗ Failed to process activity ${summaryActivity.id}:`, error);
       }
