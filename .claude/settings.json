@@ -1,0 +1,9 @@
+{
+  "enabledPlugins": {
+    "jj@kitbash": true,
+    "beads@kitbash": true,
+    "agent-os@kitbash": true,
+    "workflow@kitbash": true,
+    "code-quality@kitbash": true
+  }
+}
