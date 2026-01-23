@@ -167,9 +167,10 @@ async function loadActivity() {
 }
 
 // Free map style definitions (no API key required)
+// Using Carto basemaps - free for all uses, no signup needed
 function getMapStyle(): maplibregl.StyleSpecification {
   if (mapStyle.value === 'satellite') {
-    // ESRI World Imagery (free for non-commercial use)
+    // ESRI World Imagery (free)
     return {
       version: 8,
       sources: {
@@ -180,6 +181,7 @@ function getMapStyle(): maplibregl.StyleSpecification {
           ],
           tileSize: 256,
           attribution: 'Tiles &copy; Esri',
+          maxzoom: 19,
         },
       },
       layers: [
@@ -187,30 +189,31 @@ function getMapStyle(): maplibregl.StyleSpecification {
           id: 'esri-satellite-layer',
           type: 'raster',
           source: 'esri-satellite',
-          minzoom: 0,
-          maxzoom: 19,
         },
       ],
     }
   }
-  // OpenStreetMap tiles (completely free)
+  // Carto Voyager tiles - free, no signup, works in browsers
   return {
     version: 8,
     sources: {
-      osm: {
+      carto: {
         type: 'raster',
-        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tiles: [
+          'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+          'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+          'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+        ],
         tileSize: 256,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxzoom: 20,
       },
     },
     layers: [
       {
-        id: 'osm-tiles',
+        id: 'carto-tiles',
         type: 'raster',
-        source: 'osm',
-        minzoom: 0,
-        maxzoom: 19,
+        source: 'carto',
       },
     ],
   }
