@@ -2,13 +2,13 @@
 import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as d3 from 'd3'
-import * as L from 'leaflet'
+import mapboxgl from 'mapbox-gl'
 import polyline from '@mapbox/polyline'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import { getActivityById } from '@/services/activitiesService'
 import { formatDistance, formatDuration, formatElevation, formatPace } from '@/lib/aggregations'
 import type { Activity } from '@/types/activity'
-import 'leaflet/dist/leaflet.css'
+import 'mapbox-gl/dist/mapbox-gl.css'
 
 interface RawLap {
   id: number
@@ -44,7 +44,10 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 
 const mapContainer = ref<HTMLDivElement | null>(null)
-let map: L.Map | null = null
+let map: mapboxgl.Map | null = null
+
+const mapStyle = ref<'outdoors' | 'satellite'>('outdoors')
+const isMapFullscreen = ref(false)
 
 const lapsChartRef = ref<SVGSVGElement | null>(null)
 const lapsChartDimensions = ref({ width: 0, height: 0 })
@@ -124,6 +127,9 @@ const hasSplits = computed(() => splits.value.length > 1)
 const lapsHavePower = computed(() => laps.value.some((lap) => lap.average_watts !== undefined))
 const lapsHaveHeartrate = computed(() => laps.value.some((lap) => lap.average_heartrate !== undefined))
 
+// Mapbox access token
+const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
+
 async function loadActivity() {
   if (!activityId.value) {
     error.value = 'Invalid activity ID'
@@ -163,8 +169,18 @@ async function loadActivity() {
   }
 }
 
+function getMapStyleUrl(): string {
+  return mapStyle.value === 'satellite'
+    ? 'mapbox://styles/mapbox/satellite-streets-v12'
+    : 'mapbox://styles/mapbox/outdoors-v12'
+}
+
 function initMap() {
   if (!hasMap.value || !mapContainer.value) return
+  if (!mapboxToken) {
+    console.warn('Mapbox token not configured. Set VITE_MAPBOX_TOKEN in your .env file.')
+    return
+  }
 
   // Clean up existing map
   if (map) {
@@ -174,57 +190,192 @@ function initMap() {
 
   const coordinates = decodedPolyline.value!
 
+  // Set Mapbox access token
+  mapboxgl.accessToken = mapboxToken
+
   // Create map
-  map = L.map(mapContainer.value, {
-    scrollWheelZoom: false,
+  map = new mapboxgl.Map({
+    container: mapContainer.value,
+    style: getMapStyleUrl(),
+    center: coordinates[0] ? [coordinates[0][1], coordinates[0][0]] : [0, 0],
+    zoom: 12,
     attributionControl: true,
   })
 
-  // Add OpenStreetMap tiles
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }).addTo(map)
+  map.on('load', () => {
+    if (!map) return
 
-  // Create polyline from coordinates
-  const latLngs: L.LatLngTuple[] = coordinates.map(([lat, lng]) => [lat, lng])
-  const routeLine = L.polyline(latLngs, {
-    color: '#fc4c02',
-    weight: 4,
-    opacity: 0.8,
-  }).addTo(map)
+    // Convert coordinates to GeoJSON format [lng, lat]
+    const geoJsonCoords = coordinates.map(([lat, lng]) => [lng, lat])
 
-  // Add start/end markers
-  if (latLngs.length > 0) {
-    const startLatLng = latLngs[0]
-    const endLatLng = latLngs[latLngs.length - 1]
+    // Add route line
+    map.addSource('route', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'LineString',
+          coordinates: geoJsonCoords,
+        },
+      },
+    })
 
-    if (startLatLng) {
-      L.circleMarker(startLatLng, {
-        radius: 8,
-        fillColor: '#4caf50',
-        color: '#fff',
-        weight: 2,
-        fillOpacity: 1,
-      })
+    // Route outline (for better visibility)
+    map.addLayer({
+      id: 'route-outline',
+      type: 'line',
+      source: 'route',
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+      },
+      paint: {
+        'line-color': '#ffffff',
+        'line-width': 6,
+      },
+    })
+
+    // Main route line
+    map.addLayer({
+      id: 'route',
+      type: 'line',
+      source: 'route',
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+      },
+      paint: {
+        'line-color': '#fc4c02',
+        'line-width': 4,
+      },
+    })
+
+    // Add start marker
+    if (geoJsonCoords.length > 0 && geoJsonCoords[0]) {
+      const startEl = document.createElement('div')
+      startEl.className = 'map-marker start-marker'
+      startEl.innerHTML = '<div class="marker-inner"></div>'
+
+      new mapboxgl.Marker(startEl)
+        .setLngLat(geoJsonCoords[0] as [number, number])
+        .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Start'))
         .addTo(map)
-        .bindPopup('Start')
     }
 
-    if (endLatLng && (startLatLng![0] !== endLatLng[0] || startLatLng![1] !== endLatLng[1])) {
-      L.circleMarker(endLatLng, {
-        radius: 8,
-        fillColor: '#f44336',
-        color: '#fff',
-        weight: 2,
-        fillOpacity: 1,
-      })
-        .addTo(map)
-        .bindPopup('Finish')
+    // Add end marker (if different from start)
+    if (geoJsonCoords.length > 1) {
+      const endCoord = geoJsonCoords[geoJsonCoords.length - 1]
+      const startCoord = geoJsonCoords[0]
+      if (endCoord && startCoord && (endCoord[0] !== startCoord[0] || endCoord[1] !== startCoord[1])) {
+        const endEl = document.createElement('div')
+        endEl.className = 'map-marker end-marker'
+        endEl.innerHTML = '<div class="marker-inner"></div>'
+
+        new mapboxgl.Marker(endEl)
+          .setLngLat(endCoord as [number, number])
+          .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Finish'))
+          .addTo(map)
+      }
     }
+
+    // Fit map to route bounds
+    const bounds = new mapboxgl.LngLatBounds()
+    geoJsonCoords.forEach((coord) => {
+      if (coord) bounds.extend(coord as [number, number])
+    })
+    map.fitBounds(bounds, { padding: 50 })
+  })
+
+  // Add navigation controls
+  map.addControl(new mapboxgl.NavigationControl(), 'top-right')
+}
+
+function toggleMapStyle() {
+  mapStyle.value = mapStyle.value === 'outdoors' ? 'satellite' : 'outdoors'
+  if (map) {
+    map.setStyle(getMapStyleUrl())
+    // Re-add route after style change
+    map.once('style.load', () => {
+      if (!map || !decodedPolyline.value) return
+      const geoJsonCoords = decodedPolyline.value.map(([lat, lng]) => [lng, lat])
+
+      map.addSource('route', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: geoJsonCoords,
+          },
+        },
+      })
+
+      map.addLayer({
+        id: 'route-outline',
+        type: 'line',
+        source: 'route',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#ffffff', 'line-width': 6 },
+      })
+
+      map.addLayer({
+        id: 'route',
+        type: 'line',
+        source: 'route',
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
+        paint: { 'line-color': '#fc4c02', 'line-width': 4 },
+      })
+    })
   }
+}
 
-  // Fit map to route bounds
-  map.fitBounds(routeLine.getBounds(), { padding: [20, 20] })
+function toggleMapFullscreen() {
+  isMapFullscreen.value = !isMapFullscreen.value
+  nextTick(() => {
+    if (map) map.resize()
+  })
+}
+
+function exportGPX() {
+  if (!activity.value || !decodedPolyline.value) return
+
+  const coordinates = decodedPolyline.value
+  const name = activity.value.name || 'Activity'
+  const time = activity.value.start_date_local || activity.value.start_date
+
+  let gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Strava Stats"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
+  <metadata>
+    <name>${name}</name>
+    <time>${time}</time>
+  </metadata>
+  <trk>
+    <name>${name}</name>
+    <trkseg>
+`
+
+  coordinates.forEach(([lat, lng]) => {
+    gpx += `      <trkpt lat="${lat}" lon="${lng}"></trkpt>\n`
+  })
+
+  gpx += `    </trkseg>
+  </trk>
+</gpx>`
+
+  const blob = new Blob([gpx], { type: 'application/gpx+xml' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${name.replace(/[^a-z0-9]/gi, '_')}.gpx`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 function onLapsChartResize() {
@@ -391,125 +542,173 @@ function goBack() {
 
       <!-- Activity Content -->
       <template v-else-if="activity">
-        <!-- Header -->
-        <div class="header">
-          <button class="back-btn" @click="goBack">← Back</button>
-          <div class="header-content">
-            <div class="activity-meta">
-              <span class="sport-icon">{{ sportIcon }}</span>
-              <span class="sport-type">{{ activity.sport_type || activity.type }}</span>
-              <span class="separator">•</span>
-              <span class="date">{{ formattedDate }}</span>
-              <span class="separator">•</span>
-              <span class="time">{{ formattedStartTime }}</span>
+        <!-- Strava-style Header -->
+        <div class="activity-header">
+          <button class="back-btn" @click="goBack">
+            <span class="back-icon">←</span>
+            <span class="back-text">Back</span>
+          </button>
+
+          <div class="header-main">
+            <div class="header-top">
+              <div class="activity-type-badge">
+                <span class="sport-icon">{{ sportIcon }}</span>
+                <span class="sport-type">{{ activity.sport_type || activity.type }}</span>
+              </div>
+              <div class="activity-datetime">
+                <span class="date">{{ formattedDate }}</span>
+                <span class="time">at {{ formattedStartTime }}</span>
+              </div>
             </div>
-            <h1 class="activity-name">{{ activity.name }}</h1>
+
+            <h1 class="activity-title">{{ activity.name }}</h1>
+
             <p v-if="activity.description" class="activity-description">
               {{ activity.description }}
             </p>
+
+            <!-- Inline Stats Row - Strava Style -->
+            <div class="stats-row">
+              <div v-if="activity.distance" class="stat-item">
+                <span class="stat-value">{{ formatDistance(activity.distance) }}</span>
+                <span class="stat-label">Distance</span>
+              </div>
+              <div v-if="activity.moving_time" class="stat-item">
+                <span class="stat-value">{{ formatDuration(activity.moving_time) }}</span>
+                <span class="stat-label">Moving Time</span>
+              </div>
+              <div v-if="activity.total_elevation_gain" class="stat-item">
+                <span class="stat-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
+                <span class="stat-label">Elevation</span>
+              </div>
+              <div v-if="activity.average_speed" class="stat-item">
+                <span class="stat-value">{{ formatPace(activity.average_speed) }}</span>
+                <span class="stat-label">Pace</span>
+              </div>
+              <div v-if="activity.average_heartrate" class="stat-item">
+                <span class="stat-value">{{ Math.round(activity.average_heartrate) }}</span>
+                <span class="stat-label">Avg HR</span>
+              </div>
+              <div v-if="activity.average_watts" class="stat-item">
+                <span class="stat-value">{{ Math.round(activity.average_watts) }}W</span>
+                <span class="stat-label">Avg Power</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Main Stats Grid -->
-        <div class="stats-grid">
-          <div v-if="activity.distance" class="stat-card primary">
-            <span class="stat-value">{{ formatDistance(activity.distance) }}</span>
-            <span class="stat-label">Distance</span>
+        <!-- Map Section -->
+        <div v-if="hasMap" class="map-section" :class="{ fullscreen: isMapFullscreen }">
+          <div class="map-toolbar">
+            <div class="map-title">Route Map</div>
+            <div class="map-controls">
+              <button class="map-btn" @click="toggleMapStyle" :title="mapStyle === 'outdoors' ? 'Switch to Satellite' : 'Switch to Map'">
+                <span v-if="mapStyle === 'outdoors'">🛰️</span>
+                <span v-else>🗺️</span>
+              </button>
+              <button class="map-btn" @click="exportGPX" title="Export GPX">
+                📥
+              </button>
+              <button class="map-btn" @click="toggleMapFullscreen" :title="isMapFullscreen ? 'Exit Fullscreen' : 'Fullscreen'">
+                <span v-if="isMapFullscreen">⛶</span>
+                <span v-else>⛶</span>
+              </button>
+            </div>
           </div>
-          <div v-if="activity.moving_time" class="stat-card primary">
-            <span class="stat-value">{{ formatDuration(activity.moving_time) }}</span>
-            <span class="stat-label">Moving Time</span>
-          </div>
-          <div v-if="activity.total_elevation_gain" class="stat-card primary">
-            <span class="stat-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
-            <span class="stat-label">Elevation Gain</span>
-          </div>
-          <div v-if="activity.average_speed" class="stat-card">
-            <span class="stat-value">{{ formatPace(activity.average_speed) }}</span>
-            <span class="stat-label">Avg Pace</span>
-          </div>
-          <div v-if="activity.elapsed_time" class="stat-card">
-            <span class="stat-value">{{ formatDuration(activity.elapsed_time) }}</span>
-            <span class="stat-label">Elapsed Time</span>
-          </div>
-          <div v-if="activity.average_heartrate" class="stat-card">
-            <span class="stat-value">{{ Math.round(activity.average_heartrate) }} bpm</span>
-            <span class="stat-label">Avg Heart Rate</span>
-          </div>
-          <div v-if="activity.max_heartrate" class="stat-card">
-            <span class="stat-value">{{ Math.round(activity.max_heartrate) }} bpm</span>
-            <span class="stat-label">Max Heart Rate</span>
-          </div>
-          <div v-if="activity.average_watts" class="stat-card">
-            <span class="stat-value">{{ Math.round(activity.average_watts) }}W</span>
-            <span class="stat-label">Avg Power</span>
-          </div>
-          <div v-if="activity.max_watts" class="stat-card">
-            <span class="stat-value">{{ activity.max_watts }}W</span>
-            <span class="stat-label">Max Power</span>
-          </div>
-          <div v-if="activity.average_cadence" class="stat-card">
-            <span class="stat-value">{{ Math.round(activity.average_cadence) }}</span>
-            <span class="stat-label">Avg Cadence</span>
-          </div>
-          <div v-if="activity.calories" class="stat-card">
-            <span class="stat-value">{{ activity.calories }}</span>
-            <span class="stat-label">Calories</span>
-          </div>
-          <div v-if="activity.suffer_score" class="stat-card">
-            <span class="stat-value">{{ activity.suffer_score }}</span>
-            <span class="stat-label">Suffer Score</span>
-          </div>
-        </div>
-
-        <!-- Map -->
-        <div v-if="hasMap" class="section">
-          <h2 class="section-title">Route Map</h2>
           <div ref="mapContainer" class="map-container"></div>
+          <div v-if="!mapboxToken" class="map-token-warning">
+            Mapbox token not configured. Add VITE_MAPBOX_TOKEN to your .env file.
+          </div>
         </div>
-        <div v-else class="section no-map">
-          <h2 class="section-title">Route Map</h2>
-          <p class="no-map-text">No route data available for this activity</p>
+
+        <div v-else class="no-map-section">
+          <div class="no-map-content">
+            <span class="no-map-icon">🗺️</span>
+            <p>No route data available for this activity</p>
+          </div>
+        </div>
+
+        <!-- Secondary Stats Grid -->
+        <div class="secondary-stats">
+          <div class="stats-grid">
+            <div v-if="activity.elapsed_time && activity.elapsed_time !== activity.moving_time" class="stat-card">
+              <span class="stat-value">{{ formatDuration(activity.elapsed_time) }}</span>
+              <span class="stat-label">Elapsed Time</span>
+            </div>
+            <div v-if="activity.max_heartrate" class="stat-card">
+              <span class="stat-value">{{ Math.round(activity.max_heartrate) }} bpm</span>
+              <span class="stat-label">Max Heart Rate</span>
+            </div>
+            <div v-if="activity.max_watts" class="stat-card">
+              <span class="stat-value">{{ activity.max_watts }}W</span>
+              <span class="stat-label">Max Power</span>
+            </div>
+            <div v-if="activity.weighted_average_watts" class="stat-card">
+              <span class="stat-value">{{ activity.weighted_average_watts }}W</span>
+              <span class="stat-label">Normalized Power</span>
+            </div>
+            <div v-if="activity.average_cadence" class="stat-card">
+              <span class="stat-value">{{ Math.round(activity.average_cadence) }}</span>
+              <span class="stat-label">Avg Cadence</span>
+            </div>
+            <div v-if="activity.calories" class="stat-card">
+              <span class="stat-value">{{ activity.calories }}</span>
+              <span class="stat-label">Calories</span>
+            </div>
+            <div v-if="activity.suffer_score" class="stat-card">
+              <span class="stat-value">{{ activity.suffer_score }}</span>
+              <span class="stat-label">Relative Effort</span>
+            </div>
+            <div v-if="activity.kilojoules" class="stat-card">
+              <span class="stat-value">{{ activity.kilojoules }} kJ</span>
+              <span class="stat-label">Work</span>
+            </div>
+          </div>
         </div>
 
         <!-- Elevation Summary -->
-        <div v-if="activity.elev_high != null || activity.total_elevation_gain" class="section">
+        <div v-if="activity.elev_high != null || activity.total_elevation_gain" class="section elevation-section">
           <h2 class="section-title">Elevation</h2>
-          <div class="elevation-summary">
+          <div class="elevation-grid">
             <div class="elevation-stat" v-if="activity.total_elevation_gain">
-              <span class="elevation-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
-              <span class="elevation-label">Total Gain</span>
+              <span class="elevation-icon">↗</span>
+              <div class="elevation-data">
+                <span class="elevation-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
+                <span class="elevation-label">Total Gain</span>
+              </div>
             </div>
             <div class="elevation-stat" v-if="activity.elev_high != null">
-              <span class="elevation-value">{{ formatElevation(activity.elev_high!) }}</span>
-              <span class="elevation-label">Max Elevation</span>
+              <span class="elevation-icon">⛰</span>
+              <div class="elevation-data">
+                <span class="elevation-value">{{ formatElevation(activity.elev_high!) }}</span>
+                <span class="elevation-label">Max Elevation</span>
+              </div>
             </div>
             <div class="elevation-stat" v-if="activity.elev_low != null">
-              <span class="elevation-value">{{ formatElevation(activity.elev_low!) }}</span>
-              <span class="elevation-label">Min Elevation</span>
-            </div>
-            <div class="elevation-stat" v-if="activity.elev_high != null && activity.elev_low != null">
-              <span class="elevation-value">{{ formatElevation(activity.elev_high! - activity.elev_low!) }}</span>
-              <span class="elevation-label">Elevation Range</span>
+              <span class="elevation-icon">🏝</span>
+              <div class="elevation-data">
+                <span class="elevation-value">{{ formatElevation(activity.elev_low!) }}</span>
+                <span class="elevation-label">Min Elevation</span>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- Laps Chart -->
-        <div v-if="hasLaps" class="section">
+        <!-- Laps Section -->
+        <div v-if="hasLaps" class="section laps-section">
           <div class="section-header">
             <h2 class="section-title">Laps</h2>
-            <div class="metric-selector">
+            <div class="metric-tabs">
               <button
                 v-if="lapsHavePower"
-                class="metric-btn"
+                class="metric-tab"
                 :class="{ active: selectedLapsMetric === 'power' }"
                 @click="selectedLapsMetric = 'power'"
               >
                 Power
               </button>
               <button
-                class="metric-btn"
+                class="metric-tab"
                 :class="{ active: selectedLapsMetric === 'speed' }"
                 @click="selectedLapsMetric = 'speed'"
               >
@@ -517,7 +716,7 @@ function goBack() {
               </button>
               <button
                 v-if="lapsHaveHeartrate"
-                class="metric-btn"
+                class="metric-tab"
                 :class="{ active: selectedLapsMetric === 'heartrate' }"
                 @click="selectedLapsMetric = 'heartrate'"
               >
@@ -528,8 +727,8 @@ function goBack() {
           <div class="laps-chart-container">
             <svg ref="lapsChartRef"></svg>
           </div>
-          <div class="laps-table">
-            <table>
+          <div class="laps-table-wrapper">
+            <table class="laps-table">
               <thead>
                 <tr>
                   <th>Lap</th>
@@ -542,7 +741,7 @@ function goBack() {
               </thead>
               <tbody>
                 <tr v-for="lap in laps" :key="lap.id">
-                  <td>{{ lap.lap_index }}</td>
+                  <td class="lap-number">{{ lap.lap_index }}</td>
                   <td>{{ formatDistance(lap.distance) }}</td>
                   <td>{{ formatDuration(lap.moving_time) }}</td>
                   <td>{{ (lap.average_speed * 3.6).toFixed(1) }} km/h</td>
@@ -554,11 +753,11 @@ function goBack() {
           </div>
         </div>
 
-        <!-- Splits -->
-        <div v-if="hasSplits" class="section">
-          <h2 class="section-title">Splits (per km)</h2>
-          <div class="splits-table">
-            <table>
+        <!-- Splits Section -->
+        <div v-if="hasSplits" class="section splits-section">
+          <h2 class="section-title">Splits</h2>
+          <div class="splits-table-wrapper">
+            <table class="splits-table">
               <thead>
                 <tr>
                   <th>km</th>
@@ -569,8 +768,8 @@ function goBack() {
               </thead>
               <tbody>
                 <tr v-for="split in splits" :key="split.split">
-                  <td>{{ split.split }}</td>
-                  <td class="pace-cell">{{ formatSplitPace(split.average_speed) }} /km</td>
+                  <td class="split-number">{{ split.split }}</td>
+                  <td class="pace-cell">{{ formatSplitPace(split.average_speed) }}/km</td>
                   <td :class="{ 'elev-up': (split.elevation_difference || 0) > 0, 'elev-down': (split.elevation_difference || 0) < 0 }">
                     {{ split.elevation_difference !== undefined ? `${split.elevation_difference > 0 ? '+' : ''}${split.elevation_difference.toFixed(0)}m` : '-' }}
                   </td>
@@ -581,49 +780,44 @@ function goBack() {
           </div>
         </div>
 
-        <!-- Additional Details -->
-        <div class="section">
-          <h2 class="section-title">Activity Details</h2>
+        <!-- Activity Details -->
+        <div class="section details-section">
+          <h2 class="section-title">Details</h2>
           <div class="details-grid">
             <div v-if="activity.gear_name" class="detail-item">
-              <span class="detail-label">Gear</span>
-              <span class="detail-value">{{ activity.gear_name }}</span>
+              <span class="detail-icon">🏋️</span>
+              <div class="detail-content">
+                <span class="detail-label">Gear</span>
+                <span class="detail-value">{{ activity.gear_name }}</span>
+              </div>
             </div>
             <div v-if="activity.device_name" class="detail-item">
-              <span class="detail-label">Device</span>
-              <span class="detail-value">{{ activity.device_name }}</span>
+              <span class="detail-icon">📱</span>
+              <div class="detail-content">
+                <span class="detail-label">Device</span>
+                <span class="detail-value">{{ activity.device_name }}</span>
+              </div>
             </div>
             <div v-if="activity.kudos_count !== undefined" class="detail-item">
-              <span class="detail-label">Kudos</span>
-              <span class="detail-value">{{ activity.kudos_count }}</span>
+              <span class="detail-icon">👍</span>
+              <div class="detail-content">
+                <span class="detail-label">Kudos</span>
+                <span class="detail-value">{{ activity.kudos_count }}</span>
+              </div>
             </div>
-            <div v-if="activity.comment_count !== undefined" class="detail-item">
-              <span class="detail-label">Comments</span>
-              <span class="detail-value">{{ activity.comment_count }}</span>
+            <div v-if="activity.achievement_count != null && activity.achievement_count > 0" class="detail-item">
+              <span class="detail-icon">🏆</span>
+              <div class="detail-content">
+                <span class="detail-label">Achievements</span>
+                <span class="detail-value">{{ activity.achievement_count }}</span>
+              </div>
             </div>
-            <div v-if="activity.achievement_count !== undefined" class="detail-item">
-              <span class="detail-label">Achievements</span>
-              <span class="detail-value">{{ activity.achievement_count }}</span>
-            </div>
-            <div v-if="activity.pr_count !== undefined" class="detail-item">
-              <span class="detail-label">PRs</span>
-              <span class="detail-value">{{ activity.pr_count }}</span>
-            </div>
-            <div v-if="activity.elev_high != null" class="detail-item">
-              <span class="detail-label">Max Elevation</span>
-              <span class="detail-value">{{ formatElevation(activity.elev_high!) }}</span>
-            </div>
-            <div v-if="activity.elev_low != null" class="detail-item">
-              <span class="detail-label">Min Elevation</span>
-              <span class="detail-value">{{ formatElevation(activity.elev_low!) }}</span>
-            </div>
-            <div v-if="activity.weighted_average_watts" class="detail-item">
-              <span class="detail-label">Normalized Power</span>
-              <span class="detail-value">{{ activity.weighted_average_watts }}W</span>
-            </div>
-            <div v-if="activity.kilojoules" class="detail-item">
-              <span class="detail-label">Work</span>
-              <span class="detail-value">{{ activity.kilojoules }} kJ</span>
+            <div v-if="activity.pr_count != null && activity.pr_count > 0" class="detail-item">
+              <span class="detail-icon">🎖️</span>
+              <div class="detail-content">
+                <span class="detail-label">Personal Records</span>
+                <span class="detail-value">{{ activity.pr_count }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -636,7 +830,8 @@ function goBack() {
             rel="noopener noreferrer"
             class="strava-link"
           >
-            View on Strava →
+            <span class="strava-logo">S</span>
+            View on Strava
           </a>
         </div>
       </template>
@@ -647,7 +842,7 @@ function goBack() {
 <style scoped>
 .activity-detail {
   width: 100%;
-  max-width: 1200px;
+  max-width: 1000px;
   margin: 0 auto;
 }
 
@@ -697,109 +892,279 @@ function goBack() {
   border: 1px solid #e0e0e0;
 }
 
-/* Header */
-.header {
-  margin-bottom: 1.5rem;
+/* Activity Header - Strava Style */
+.activity-header {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   background: none;
   border: none;
   color: #666;
   font-size: 0.875rem;
   cursor: pointer;
   padding: 0.5rem 0;
-  margin-bottom: 0.5rem;
+  margin-bottom: 1rem;
+  transition: color 0.2s;
 }
 
 .back-btn:hover {
   color: #fc4c02;
 }
 
-.header-content {
-  background: #fff;
-  border-radius: 12px;
-  padding: 1.5rem;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+.back-icon {
+  font-size: 1.25rem;
 }
 
-.activity-meta {
+.header-main {
+  /* Header content */
+}
+
+.header-top {
   display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.activity-type-badge {
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.875rem;
-  color: #666;
-  margin-bottom: 0.5rem;
-  flex-wrap: wrap;
+  background: #f5f5f5;
+  padding: 0.375rem 0.75rem;
+  border-radius: 20px;
 }
 
 .sport-icon {
-  font-size: 1.5rem;
+  font-size: 1.25rem;
 }
 
 .sport-type {
-  color: #fc4c02;
+  font-size: 0.875rem;
   font-weight: 600;
+  color: #fc4c02;
   text-transform: uppercase;
 }
 
-.separator {
-  color: #ccc;
+.activity-datetime {
+  font-size: 0.875rem;
+  color: #666;
 }
 
-.activity-name {
-  font-size: 1.5rem;
+.activity-datetime .time {
+  margin-left: 0.5rem;
+  color: #999;
+}
+
+.activity-title {
+  font-size: 1.75rem;
   font-weight: 700;
   color: #1a1a2e;
-  margin: 0;
+  margin: 0 0 0.5rem 0;
+  line-height: 1.3;
 }
 
 .activity-description {
   color: #666;
-  margin: 0.75rem 0 0 0;
+  margin: 0 0 1rem 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Stats Row - Inline Strava Style */
+.stats-row {
+  display: flex;
+  gap: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid #f0f0f0;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.stats-row .stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #1a1a2e;
+  line-height: 1.2;
+}
+
+.stats-row .stat-label {
+  font-size: 0.75rem;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Map Section */
+.map-section {
+  background: #fff;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  transition: all 0.3s ease;
+}
+
+.map-section.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  border-radius: 0;
+  margin: 0;
+}
+
+.map-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: #f9f9f9;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.map-title {
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.map-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.map-btn {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: all 0.2s;
+}
+
+.map-btn:hover {
+  border-color: #fc4c02;
+  background: #fff8f5;
+}
+
+.map-container {
+  width: 100%;
+  height: 400px;
+}
+
+.map-section.fullscreen .map-container {
+  height: calc(100vh - 50px);
+}
+
+.map-token-warning {
+  padding: 1rem;
+  background: #fff3cd;
+  color: #856404;
+  text-align: center;
   font-size: 0.875rem;
 }
 
-/* Stats Grid */
+.no-map-section {
+  background: #f9f9f9;
+  border-radius: 12px;
+  padding: 3rem;
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.no-map-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.no-map-icon {
+  font-size: 2.5rem;
+  opacity: 0.5;
+}
+
+.no-map-content p {
+  color: #999;
+  margin: 0;
+}
+
+/* Mapbox Markers */
+:deep(.map-marker) {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+:deep(.start-marker) {
+  background: #4caf50;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+:deep(.end-marker) {
+  background: #f44336;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+:deep(.marker-inner) {
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  border-radius: 50%;
+}
+
+/* Secondary Stats */
+.secondary-stats {
+  margin-bottom: 1rem;
+}
+
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
 }
 
 .stat-card {
   background: #fff;
-  border-radius: 12px;
-  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  padding: 1rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.stat-card.primary {
-  background: linear-gradient(135deg, #fc4c02 0%, #ff7043 100%);
-  color: #fff;
-}
-
-.stat-card.primary .stat-value {
-  color: #fff;
-}
-
-.stat-card.primary .stat-label {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.stat-value {
+.stat-card .stat-value {
   display: block;
   font-size: 1.25rem;
   font-weight: 700;
   color: #1a1a2e;
-  margin-bottom: 0.25rem;
 }
 
-.stat-label {
-  font-size: 0.75rem;
-  color: #666;
+.stat-card .stat-label {
+  font-size: 0.7rem;
+  color: #999;
   text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 /* Sections */
@@ -807,51 +1172,55 @@ function goBack() {
   background: #fff;
   border-radius: 12px;
   padding: 1.5rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .section-title {
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 600;
   color: #1a1a2e;
   margin: 0 0 1rem 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
-/* Map */
-.map-container {
-  width: 100%;
-  height: 400px;
-  border-radius: 8px;
-  overflow: hidden;
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
-.no-map {
-  text-align: center;
-  padding: 2rem;
-}
-
-.no-map-text {
-  color: #999;
-  font-style: italic;
+.section-header .section-title {
   margin: 0;
 }
 
-/* Elevation Summary */
-.elevation-summary {
+/* Elevation Section */
+.elevation-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1rem;
 }
 
 .elevation-stat {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  text-align: center;
+  gap: 1rem;
   padding: 1rem;
   background: #f9f9f9;
-  border-radius: 8px;
+  border-radius: 10px;
+}
+
+.elevation-icon {
+  font-size: 1.5rem;
+}
+
+.elevation-data {
+  display: flex;
+  flex-direction: column;
 }
 
 .elevation-value {
@@ -863,51 +1232,40 @@ function goBack() {
 .elevation-label {
   font-size: 0.75rem;
   color: #666;
-  text-transform: uppercase;
-  margin-top: 0.25rem;
 }
 
-/* Section Header */
-.section-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.section-header .section-title {
-  margin: 0;
-}
-
-/* Metric Selector */
-.metric-selector {
+/* Metric Tabs */
+.metric-tabs {
   display: flex;
   gap: 0.25rem;
+  background: #f5f5f5;
+  border-radius: 6px;
+  padding: 0.25rem;
 }
 
-.metric-btn {
-  padding: 0.375rem 0.75rem;
-  border: 1px solid #e0e0e0;
-  background: #fff;
+.metric-tab {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: transparent;
   border-radius: 4px;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 500;
   cursor: pointer;
+  color: #666;
   transition: all 0.2s;
 }
 
-.metric-btn:hover {
-  border-color: #fc4c02;
+.metric-tab:hover {
+  color: #1a1a2e;
 }
 
-.metric-btn.active {
-  background: #fc4c02;
-  border-color: #fc4c02;
-  color: #fff;
+.metric-tab.active {
+  background: #fff;
+  color: #fc4c02;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-/* Laps Chart */
+/* Laps Section */
 .laps-chart-container {
   width: 100%;
   height: 200px;
@@ -920,13 +1278,13 @@ function goBack() {
 }
 
 /* Tables */
-.laps-table,
-.splits-table {
+.laps-table-wrapper,
+.splits-table-wrapper {
   overflow-x: auto;
 }
 
-.laps-table table,
-.splits-table table {
+.laps-table,
+.splits-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.875rem;
@@ -935,17 +1293,18 @@ function goBack() {
 .laps-table th,
 .splits-table th {
   text-align: left;
-  padding: 0.75rem 0.5rem;
+  padding: 0.75rem 1rem;
   border-bottom: 2px solid #e0e0e0;
   font-weight: 600;
   color: #666;
   text-transform: uppercase;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
 }
 
 .laps-table td,
 .splits-table td {
-  padding: 0.75rem 0.5rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid #f0f0f0;
   color: #1a1a2e;
 }
@@ -955,40 +1314,61 @@ function goBack() {
   background: #f9f9f9;
 }
 
+.lap-number,
+.split-number {
+  font-weight: 600;
+  color: #fc4c02;
+}
+
 .pace-cell {
   font-weight: 600;
-  font-family: monospace;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
 }
 
 .elev-up {
   color: #4caf50;
+  font-weight: 500;
 }
 
 .elev-down {
   color: #f44336;
+  font-weight: 500;
 }
 
-/* Details Grid */
+/* Details Section */
 .details-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
 }
 
 .detail-item {
   display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: #f9f9f9;
+  border-radius: 10px;
+}
+
+.detail-icon {
+  font-size: 1.5rem;
+}
+
+.detail-content {
+  display: flex;
   flex-direction: column;
-  gap: 0.25rem;
 }
 
 .detail-label {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: #999;
   text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 .detail-value {
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   font-weight: 500;
   color: #1a1a2e;
 }
@@ -996,17 +1376,20 @@ function goBack() {
 /* Strava Link */
 .strava-link-section {
   text-align: center;
-  margin-bottom: 2rem;
+  margin: 1.5rem 0 2rem;
 }
 
 .strava-link {
-  display: inline-block;
-  padding: 0.75rem 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.75rem;
   background: #fc4c02;
   color: #fff;
   text-decoration: none;
   border-radius: 8px;
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 0.9rem;
   transition: background 0.2s;
 }
 
@@ -1014,17 +1397,54 @@ function goBack() {
   background: #e04400;
 }
 
+.strava-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+/* Responsive */
 @media (max-width: 768px) {
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
+  .activity-header {
+    padding: 1rem;
+  }
+
+  .activity-title {
+    font-size: 1.4rem;
+  }
+
+  .stats-row {
+    gap: 1rem;
+  }
+
+  .stats-row .stat-value {
+    font-size: 1.25rem;
   }
 
   .map-container {
     height: 300px;
   }
 
-  .details-grid {
+  .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .elevation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>
