@@ -60,64 +60,67 @@ const stats = computed(() => ({
           </div>
         </div>
 
-        <!-- Recent Activities -->
-        <div class="section">
-          <h2 class="section-title">Recent Activities</h2>
-          <div v-if="recentActivities.length === 0" class="empty-state">
-            <p>No activities yet. Connect your Strava account to get started.</p>
-          </div>
-          <div v-else class="activities-list">
-            <RouterLink
-              v-for="activity in recentActivities"
-              :key="activity.id"
-              :to="`/activity/${activity.id}`"
-              class="activity-card"
-            >
-              <div class="activity-header">
-                <span class="activity-type">{{ activity.sport_type || activity.type }}</span>
-                <span class="activity-date">{{
-                  new Date(activity.start_date).toLocaleDateString()
-                }}</span>
-              </div>
-              <div class="activity-name">{{ activity.name }}</div>
-              <div class="activity-stats">
-                <span v-if="activity.distance">{{
-                  formatDistance(activity.distance)
-                }}</span>
-                <span v-if="activity.moving_time">{{
-                  formatDuration(activity.moving_time)
-                }}</span>
-                <span v-if="activity.total_elevation_gain">{{
-                  formatElevation(activity.total_elevation_gain)
-                }}</span>
-              </div>
+        <!-- Two-column layout for Recent Activities and Quick Links -->
+        <div class="content-grid">
+          <!-- Recent Activities -->
+          <div class="section activities-section">
+            <h2 class="section-title">Recent Activities</h2>
+            <div v-if="recentActivities.length === 0" class="empty-state">
+              <p>No activities yet. Connect your Strava account to get started.</p>
+            </div>
+            <div v-else class="activities-list">
+              <RouterLink
+                v-for="activity in recentActivities"
+                :key="activity.id"
+                :to="`/activity/${activity.id}`"
+                class="activity-card"
+              >
+                <div class="activity-header">
+                  <span class="activity-type">{{ activity.sport_type || activity.type }}</span>
+                  <span class="activity-date">{{
+                    new Date(activity.start_date).toLocaleDateString()
+                  }}</span>
+                </div>
+                <div class="activity-name">{{ activity.name }}</div>
+                <div class="activity-stats">
+                  <span v-if="activity.distance">{{
+                    formatDistance(activity.distance)
+                  }}</span>
+                  <span v-if="activity.moving_time">{{
+                    formatDuration(activity.moving_time)
+                  }}</span>
+                  <span v-if="activity.total_elevation_gain">{{
+                    formatElevation(activity.total_elevation_gain)
+                  }}</span>
+                </div>
+              </RouterLink>
+            </div>
+            <RouterLink v-if="recentActivities.length > 0" to="/activities" class="view-all-link">
+              View All Activities →
             </RouterLink>
           </div>
-          <RouterLink v-if="recentActivities.length > 0" to="/activities" class="view-all-link">
-            View All Activities →
-          </RouterLink>
-        </div>
 
-        <!-- Quick Links -->
-        <div class="section">
-          <h2 class="section-title">Quick Links</h2>
-          <div class="quick-links">
-            <RouterLink to="/training-log" class="quick-link">
-              <span class="quick-link-icon">📅</span>
-              <span class="quick-link-text">Training Log</span>
-            </RouterLink>
-            <RouterLink to="/weekly-intensity" class="quick-link">
-              <span class="quick-link-icon">📊</span>
-              <span class="quick-link-text">Weekly Intensity</span>
-            </RouterLink>
-            <RouterLink to="/monthly-fitness" class="quick-link">
-              <span class="quick-link-icon">❤️</span>
-              <span class="quick-link-text">Monthly Fitness</span>
-            </RouterLink>
-            <RouterLink to="/sports" class="quick-link">
-              <span class="quick-link-icon">🏆</span>
-              <span class="quick-link-text">Sports Breakdown</span>
-            </RouterLink>
+          <!-- Quick Links -->
+          <div class="section quick-links-section">
+            <h2 class="section-title">Quick Links</h2>
+            <div class="quick-links">
+              <RouterLink to="/training-log" class="quick-link">
+                <span class="quick-link-icon">📅</span>
+                <span class="quick-link-text">Training Log</span>
+              </RouterLink>
+              <RouterLink to="/weekly-intensity" class="quick-link">
+                <span class="quick-link-icon">📊</span>
+                <span class="quick-link-text">Weekly Intensity</span>
+              </RouterLink>
+              <RouterLink to="/monthly-fitness" class="quick-link">
+                <span class="quick-link-icon">❤️</span>
+                <span class="quick-link-text">Monthly Fitness</span>
+              </RouterLink>
+              <RouterLink to="/sports" class="quick-link">
+                <span class="quick-link-icon">🏆</span>
+                <span class="quick-link-text">Sports Breakdown</span>
+              </RouterLink>
+            </div>
           </div>
         </div>
       </template>
@@ -127,7 +130,8 @@ const stats = computed(() => ({
 
 <style scoped>
 .dashboard {
-  max-width: 1200px;
+  width: 100%;
+  max-width: 1400px;
   margin: 0 auto;
 }
 
@@ -174,23 +178,23 @@ const stats = computed(() => ({
   cursor: pointer;
 }
 
-/* Stats Grid */
+/* Stats Grid - 4 columns on desktop */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
   margin-bottom: 2rem;
 }
 
 .stat-card {
   background: #fff;
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 1.5rem 2rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .stat-value {
-  font-size: 1.75rem;
+  font-size: 2rem;
   font-weight: 700;
   color: #fc4c02;
   margin-bottom: 0.25rem;
@@ -199,6 +203,15 @@ const stats = computed(() => ({
 .stat-label {
   font-size: 0.875rem;
   color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Content Grid - Two columns on desktop */
+.content-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
 }
 
 /* Sections */
@@ -206,8 +219,15 @@ const stats = computed(() => ({
   background: #fff;
   border-radius: 12px;
   padding: 1.5rem;
-  margin-bottom: 1.5rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.activities-section {
+  min-height: 400px;
+}
+
+.quick-links-section {
+  height: fit-content;
 }
 
 .section-title {
@@ -231,8 +251,11 @@ const stats = computed(() => ({
 }
 
 .activity-card {
-  display: block;
-  padding: 1rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 0.25rem 1rem;
+  padding: 1rem 1.25rem;
   background: #f9f9f9;
   border-radius: 8px;
   text-decoration: none;
@@ -248,7 +271,7 @@ const stats = computed(() => ({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.5rem;
+  grid-column: 1 / -1;
 }
 
 .activity-type {
@@ -266,14 +289,16 @@ const stats = computed(() => ({
 .activity-name {
   font-weight: 600;
   color: #1a1a2e;
-  margin-bottom: 0.5rem;
+  grid-column: 1;
 }
 
 .activity-stats {
   display: flex;
-  gap: 1rem;
+  gap: 1.5rem;
   font-size: 0.875rem;
   color: #666;
+  grid-column: 1 / -1;
+  margin-top: 0.25rem;
 }
 
 .view-all-link {
@@ -290,10 +315,10 @@ const stats = computed(() => ({
   text-decoration: underline;
 }
 
-/* Quick Links */
+/* Quick Links - 2x2 grid */
 .quick-links {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
 }
 
@@ -301,12 +326,14 @@ const stats = computed(() => ({
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 1.5rem;
+  justify-content: center;
+  padding: 1.5rem 1rem;
   background: #f9f9f9;
   border-radius: 8px;
   text-decoration: none;
   color: inherit;
   transition: all 0.2s;
+  min-height: 100px;
 }
 
 .quick-link:hover {
@@ -325,9 +352,35 @@ const stats = computed(() => ({
   text-align: center;
 }
 
+/* Tablet breakpoint */
+@media (max-width: 1024px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Mobile breakpoint */
 @media (max-width: 768px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+  }
+
+  .stat-card {
+    padding: 1rem 1.25rem;
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
+  }
+
+  .content-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
   }
 
   .quick-links {
