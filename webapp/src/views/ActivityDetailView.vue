@@ -2,13 +2,13 @@
 import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as d3 from 'd3'
-import mapboxgl from 'mapbox-gl'
+import maplibregl from 'maplibre-gl'
 import polyline from '@mapbox/polyline'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import { getActivityById } from '@/services/activitiesService'
 import { formatDistance, formatDuration, formatElevation, formatPace } from '@/lib/aggregations'
 import type { Activity } from '@/types/activity'
-import 'mapbox-gl/dist/mapbox-gl.css'
+import 'maplibre-gl/dist/maplibre-gl.css'
 
 interface RawLap {
   id: number
@@ -44,7 +44,7 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 
 const mapContainer = ref<HTMLDivElement | null>(null)
-let map: mapboxgl.Map | null = null
+let map: maplibregl.Map | null = null
 
 const mapStyle = ref<'outdoors' | 'satellite'>('outdoors')
 const isMapFullscreen = ref(false)
@@ -127,9 +127,6 @@ const hasSplits = computed(() => splits.value.length > 1)
 const lapsHavePower = computed(() => laps.value.some((lap) => lap.average_watts !== undefined))
 const lapsHaveHeartrate = computed(() => laps.value.some((lap) => lap.average_heartrate !== undefined))
 
-// Mapbox access token
-const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
-
 async function loadActivity() {
   if (!activityId.value) {
     error.value = 'Invalid activity ID'
@@ -169,18 +166,58 @@ async function loadActivity() {
   }
 }
 
-function getMapStyleUrl(): string {
-  return mapStyle.value === 'satellite'
-    ? 'mapbox://styles/mapbox/satellite-streets-v12'
-    : 'mapbox://styles/mapbox/outdoors-v12'
+// Free map style definitions (no API key required)
+function getMapStyle(): maplibregl.StyleSpecification {
+  if (mapStyle.value === 'satellite') {
+    // ESRI World Imagery (free for non-commercial use)
+    return {
+      version: 8,
+      sources: {
+        'esri-satellite': {
+          type: 'raster',
+          tiles: [
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+          ],
+          tileSize: 256,
+          attribution: 'Tiles &copy; Esri',
+        },
+      },
+      layers: [
+        {
+          id: 'esri-satellite-layer',
+          type: 'raster',
+          source: 'esri-satellite',
+          minzoom: 0,
+          maxzoom: 19,
+        },
+      ],
+    }
+  }
+  // OpenStreetMap tiles (completely free)
+  return {
+    version: 8,
+    sources: {
+      osm: {
+        type: 'raster',
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      },
+    },
+    layers: [
+      {
+        id: 'osm-tiles',
+        type: 'raster',
+        source: 'osm',
+        minzoom: 0,
+        maxzoom: 19,
+      },
+    ],
+  }
 }
 
 function initMap() {
   if (!hasMap.value || !mapContainer.value) return
-  if (!mapboxToken) {
-    console.warn('Mapbox token not configured. Set VITE_MAPBOX_TOKEN in your .env file.')
-    return
-  }
 
   // Clean up existing map
   if (map) {
@@ -190,16 +227,12 @@ function initMap() {
 
   const coordinates = decodedPolyline.value!
 
-  // Set Mapbox access token
-  mapboxgl.accessToken = mapboxToken
-
-  // Create map
-  map = new mapboxgl.Map({
+  // Create map with free OpenStreetMap tiles
+  map = new maplibregl.Map({
     container: mapContainer.value,
-    style: getMapStyleUrl(),
+    style: getMapStyle(),
     center: coordinates[0] ? [coordinates[0][1], coordinates[0][0]] : [0, 0],
     zoom: 12,
-    attributionControl: true,
   })
 
   map.on('load', () => {
@@ -257,9 +290,9 @@ function initMap() {
       startEl.className = 'map-marker start-marker'
       startEl.innerHTML = '<div class="marker-inner"></div>'
 
-      new mapboxgl.Marker(startEl)
+      new maplibregl.Marker(startEl)
         .setLngLat(geoJsonCoords[0] as [number, number])
-        .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Start'))
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setText('Start'))
         .addTo(map)
     }
 
@@ -272,15 +305,15 @@ function initMap() {
         endEl.className = 'map-marker end-marker'
         endEl.innerHTML = '<div class="marker-inner"></div>'
 
-        new mapboxgl.Marker(endEl)
+        new maplibregl.Marker(endEl)
           .setLngLat(endCoord as [number, number])
-          .setPopup(new mapboxgl.Popup({ offset: 25 }).setText('Finish'))
+          .setPopup(new maplibregl.Popup({ offset: 25 }).setText('Finish'))
           .addTo(map)
       }
     }
 
     // Fit map to route bounds
-    const bounds = new mapboxgl.LngLatBounds()
+    const bounds = new maplibregl.LngLatBounds()
     geoJsonCoords.forEach((coord) => {
       if (coord) bounds.extend(coord as [number, number])
     })
@@ -288,13 +321,13 @@ function initMap() {
   })
 
   // Add navigation controls
-  map.addControl(new mapboxgl.NavigationControl(), 'top-right')
+  map.addControl(new maplibregl.NavigationControl(), 'top-right')
 }
 
 function toggleMapStyle() {
   mapStyle.value = mapStyle.value === 'outdoors' ? 'satellite' : 'outdoors'
   if (map) {
-    map.setStyle(getMapStyleUrl())
+    map.setStyle(getMapStyle())
     // Re-add route after style change
     map.once('style.load', () => {
       if (!map || !decodedPolyline.value) return
@@ -616,9 +649,6 @@ function goBack() {
             </div>
           </div>
           <div ref="mapContainer" class="map-container"></div>
-          <div v-if="!mapboxToken" class="map-token-warning">
-            Mapbox token not configured. Add VITE_MAPBOX_TOKEN to your .env file.
-          </div>
         </div>
 
         <div v-else class="no-map-section">
@@ -1071,14 +1101,6 @@ function goBack() {
 
 .map-section.fullscreen .map-container {
   height: calc(100vh - 50px);
-}
-
-.map-token-warning {
-  padding: 1rem;
-  background: #fff3cd;
-  color: #856404;
-  text-align: center;
-  font-size: 0.875rem;
 }
 
 .no-map-section {
