@@ -646,7 +646,8 @@ function goBack() {
 
 <style scoped>
 .activity-detail {
-  max-width: 1000px;
+  width: 100%;
+  max-width: 1200px;
   margin: 0 auto;
 }
 

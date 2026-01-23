@@ -164,6 +164,77 @@ export function groupByWeek(activities: Activity[]): WeekSummary[] {
 }
 
 /**
+ * Group activities by week, including empty weeks in the range.
+ * This creates a continuous timeline showing all weeks from the earliest
+ * to the most recent activity, with empty weeks having zero intensity.
+ */
+export function groupByWeekWithGaps(activities: Activity[], weekCount?: number): WeekSummary[] {
+  if (activities.length === 0) return []
+
+  // First, get the weeks that have activities
+  const activityWeeks = groupByWeek(activities)
+  const weekMap = new Map<string, WeekSummary>()
+  activityWeeks.forEach((week) => weekMap.set(week.weekStart, week))
+
+  // Determine the date range
+  const now = new Date()
+  const currentWeekStart = getWeekStart(now)
+
+  // Find the earliest activity date
+  const sortedActivities = [...activities].sort(
+    (a, b) =>
+      new Date(a.start_date_local ?? a.start_date).getTime() -
+      new Date(b.start_date_local ?? b.start_date).getTime(),
+  )
+  const firstActivity = sortedActivities[0]
+  if (!firstActivity) return []
+
+  const earliestDate = new Date(firstActivity.start_date_local ?? firstActivity.start_date)
+  const earliestWeekStart = getWeekStart(earliestDate)
+
+  // Calculate how many weeks from earliest to current
+  const totalWeeksAvailable = Math.ceil(
+    (currentWeekStart.getTime() - earliestWeekStart.getTime()) / (7 * 24 * 60 * 60 * 1000),
+  ) + 1
+
+  // Use provided weekCount or show all available weeks
+  const weeksToShow = weekCount ? Math.min(weekCount, totalWeeksAvailable) : totalWeeksAvailable
+
+  // Generate all weeks in the range (from current going back)
+  const allWeeks: WeekSummary[] = []
+  const iterDate = new Date(currentWeekStart)
+
+  for (let i = 0; i < weeksToShow; i++) {
+    const weekStartStr = formatDate(iterDate)
+    const weekEnd = getWeekEnd(iterDate)
+    const weekEndStr = formatDate(weekEnd)
+
+    const existingWeek = weekMap.get(weekStartStr)
+    if (existingWeek) {
+      allWeeks.push(existingWeek)
+    } else {
+      // Create empty week
+      allWeeks.push({
+        weekStart: weekStartStr,
+        weekEnd: weekEndStr,
+        days: [],
+        totalDistance: 0,
+        totalDuration: 0,
+        totalElevation: 0,
+        activityCount: 0,
+        intensity: 0,
+      })
+    }
+
+    // Move to previous week
+    iterDate.setDate(iterDate.getDate() - 7)
+  }
+
+  // Return in chronological order (oldest first) for charts
+  return allWeeks.reverse()
+}
+
+/**
  * Group activities by month
  */
 export function groupByMonth(activities: Activity[]): MonthSummary[] {

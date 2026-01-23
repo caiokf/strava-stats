@@ -315,7 +315,8 @@ function renderChart() {
 
 <style scoped>
 .training-log {
-  max-width: 1200px;
+  width: 100%;
+  max-width: 1400px;
   margin: 0 auto;
 }
 

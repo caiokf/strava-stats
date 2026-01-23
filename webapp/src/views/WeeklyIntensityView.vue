@@ -4,7 +4,7 @@ import * as d3 from 'd3'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ChartContainer from '@/components/charts/ChartContainer.vue'
 import { useActivitiesStore } from '@/stores/activities'
-import { groupByWeek, formatDuration, formatDistance, type WeekSummary } from '@/lib/aggregations'
+import { groupByWeekWithGaps, formatDuration, formatDistance, type WeekSummary } from '@/lib/aggregations'
 
 const activitiesStore = useActivitiesStore()
 
@@ -22,21 +22,25 @@ const weekCountOptions = [
 const weeklySummaries = computed(() => {
   if (!activitiesStore.hasAllActivities) return []
 
-  const allWeeks = groupByWeek(activitiesStore.allActivities)
-  return allWeeks.slice(0, weekCount.value).reverse()
+  // Use groupByWeekWithGaps to include empty weeks in the range
+  return groupByWeekWithGaps(activitiesStore.allActivities, weekCount.value)
 })
 
 const stats = computed(() => {
   if (weeklySummaries.value.length === 0) {
-    return { avgIntensity: 0, maxIntensity: 0, trend: 0 }
+    return { avgIntensity: 0, maxIntensity: 0, trend: 0, activeWeeks: 0 }
   }
 
-  const intensities = weeklySummaries.value.map((w) => w.intensity)
-  const avgIntensity = intensities.reduce((a, b) => a + b, 0) / intensities.length
+  // Only count weeks with activity for average calculation
+  const activeWeeks = weeklySummaries.value.filter((w) => w.activityCount > 0)
+  const intensities = activeWeeks.map((w) => w.intensity)
+  const avgIntensity = intensities.length > 0
+    ? intensities.reduce((a, b) => a + b, 0) / intensities.length
+    : 0
 
-  const maxIntensity = Math.max(...intensities)
+  const maxIntensity = intensities.length > 0 ? Math.max(...intensities) : 0
 
-  // Trend: compare last 4 weeks to previous 4 weeks
+  // Trend: compare last 4 weeks to previous 4 weeks (including empty weeks for accurate timeline)
   const recent = weeklySummaries.value.slice(-4)
   const previous = weeklySummaries.value.slice(-8, -4)
 
@@ -51,6 +55,7 @@ const stats = computed(() => {
     avgIntensity: Math.round(avgIntensity * 10) / 10,
     maxIntensity: Math.round(maxIntensity * 10) / 10,
     trend: Math.round(trend),
+    activeWeeks: activeWeeks.length,
   }
 })
 
@@ -96,11 +101,15 @@ function renderChart() {
   const maxIntensity = Math.max(...weeklySummaries.value.map((w) => w.intensity), 1)
   const yScale = d3.scaleLinear().domain([0, maxIntensity * 1.1]).range([chartHeight, 0])
 
-  // Color scale based on intensity
-  const colorScale = d3
-    .scaleLinear<string>()
-    .domain([0, maxIntensity / 2, maxIntensity])
-    .range(['#c6e48b', '#7bc96f', '#196127'])
+  // Color scale based on intensity (empty weeks get a light grey)
+  const colorScale = (intensity: number) => {
+    if (intensity === 0) return '#e8e8e8' // Light grey for rest weeks
+    const scale = d3
+      .scaleLinear<string>()
+      .domain([0, maxIntensity / 2, maxIntensity])
+      .range(['#c6e48b', '#7bc96f', '#196127'])
+    return scale(intensity)
+  }
 
   // Grid lines
   g.append('g')
@@ -117,16 +126,24 @@ function renderChart() {
 
   g.select('.grid').select('.domain').remove()
 
-  // Bars
+  // Bars - show a minimum height for rest weeks so they're visible
+  const minBarHeight = 4
+
   g.selectAll('.bar')
     .data(weeklySummaries.value)
     .enter()
     .append('rect')
     .attr('class', 'bar')
     .attr('x', (d) => xScale(d.weekStart) || 0)
-    .attr('y', (d) => yScale(d.intensity))
+    .attr('y', (d) => {
+      const barHeight = d.intensity === 0 ? minBarHeight : chartHeight - yScale(d.intensity)
+      return chartHeight - barHeight
+    })
     .attr('width', xScale.bandwidth())
-    .attr('height', (d) => chartHeight - yScale(d.intensity))
+    .attr('height', (d) => {
+      if (d.intensity === 0) return minBarHeight
+      return chartHeight - yScale(d.intensity)
+    })
     .attr('fill', (d) => colorScale(d.intensity))
     .attr('rx', 3)
     .style('cursor', 'pointer')
@@ -231,7 +248,10 @@ function renderChart() {
         <template #footer>
           <div v-if="selectedWeek" class="week-details">
             <strong>Week of {{ selectedWeek.weekStart }}</strong>
-            <div class="week-stats">
+            <div v-if="selectedWeek.activityCount === 0" class="week-stats rest-week">
+              <span>Rest week - No activities</span>
+            </div>
+            <div v-else class="week-stats">
               <span>{{ selectedWeek.activityCount }} activities</span>
               <span>{{ formatDistance(selectedWeek.totalDistance) }}</span>
               <span>{{ formatDuration(selectedWeek.totalDuration) }}</span>
@@ -249,6 +269,7 @@ function renderChart() {
             v-for="week in weeklySummaries.slice().reverse().slice(0, 8)"
             :key="week.weekStart"
             class="week-card"
+            :class="{ 'rest-week-card': week.activityCount === 0 }"
           >
             <div class="week-date">
               {{ new Date(week.weekStart).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }}
@@ -258,14 +279,16 @@ function renderChart() {
             <div class="week-intensity-bar">
               <div
                 class="intensity-fill"
+                :class="{ 'rest-fill': week.activityCount === 0 }"
                 :style="{
-                  width: `${Math.min(100, (week.intensity / (stats.maxIntensity || 1)) * 100)}%`,
+                  width: week.activityCount === 0 ? '100%' : `${Math.min(100, (week.intensity / (stats.maxIntensity || 1)) * 100)}%`,
                 }"
               ></div>
             </div>
             <div class="week-summary">
-              <span>{{ week.activityCount }} activities</span>
-              <span class="intensity-value">{{ week.intensity.toFixed(1) }}</span>
+              <span v-if="week.activityCount === 0" class="rest-label">Rest week</span>
+              <span v-else>{{ week.activityCount }} activities</span>
+              <span class="intensity-value" :class="{ 'rest-intensity': week.activityCount === 0 }">{{ week.intensity.toFixed(1) }}</span>
             </div>
           </div>
         </div>
@@ -276,7 +299,8 @@ function renderChart() {
 
 <style scoped>
 .weekly-intensity {
-  max-width: 1200px;
+  width: 100%;
+  max-width: 1400px;
   margin: 0 auto;
 }
 
@@ -432,6 +456,29 @@ function renderChart() {
 .intensity-value {
   font-weight: 600;
   color: #196127;
+}
+
+.intensity-value.rest-intensity {
+  color: #999;
+}
+
+/* Rest week styles */
+.rest-week-card {
+  opacity: 0.7;
+}
+
+.rest-fill {
+  background: #e8e8e8 !important;
+}
+
+.rest-label {
+  color: #999;
+  font-style: italic;
+}
+
+.rest-week {
+  color: #999;
+  font-style: italic;
 }
 
 @media (max-width: 768px) {
