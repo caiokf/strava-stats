@@ -205,3 +205,62 @@ export async function getActivityCount(): Promise<number> {
 
   return count || 0
 }
+
+export interface PowerStreamData {
+  activityId: number
+  timeData: number[]
+  powerData: number[]
+}
+
+/**
+ * Get power streams for cycling activities.
+ * Returns time and watts stream data for activities that have power data.
+ */
+export async function getPowerStreamsForActivities(
+  activityIds: number[],
+): Promise<PowerStreamData[]> {
+  if (activityIds.length === 0) return []
+
+  // Fetch time and watts streams for the activities
+  const { data, error } = await supabase
+    .from('activity_streams')
+    .select('activity_id, stream_type, data')
+    .in('activity_id', activityIds)
+    .in('stream_type', ['time', 'watts'])
+
+  if (error) {
+    throw new Error(`Failed to fetch power streams: ${error.message}`)
+  }
+
+  if (!data || data.length === 0) return []
+
+  // Group by activity_id
+  const streamsByActivity = new Map<number, { time?: number[]; watts?: number[] }>()
+
+  for (const row of data) {
+    const activityId = row.activity_id
+    if (!streamsByActivity.has(activityId)) {
+      streamsByActivity.set(activityId, {})
+    }
+    const streams = streamsByActivity.get(activityId)!
+    if (row.stream_type === 'time') {
+      streams.time = row.data as number[]
+    } else if (row.stream_type === 'watts') {
+      streams.watts = row.data as number[]
+    }
+  }
+
+  // Convert to PowerStreamData, only including activities with both time and watts
+  const result: PowerStreamData[] = []
+  for (const [activityId, streams] of streamsByActivity) {
+    if (streams.time && streams.watts && streams.time.length === streams.watts.length) {
+      result.push({
+        activityId,
+        timeData: streams.time,
+        powerData: streams.watts,
+      })
+    }
+  }
+
+  return result
+}

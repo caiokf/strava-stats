@@ -3,10 +3,27 @@ import { ref, computed, onMounted, watch } from 'vue'
 import * as d3 from 'd3'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ChartContainer from '@/components/charts/ChartContainer.vue'
+import YearSelector from '@/components/YearSelector.vue'
 import { useActivitiesStore } from '@/stores/activities'
+import { useActivityYears } from '@/composables/useActivityYears'
 import { groupByWeekWithGaps, formatDuration, formatDistance, type WeekSummary } from '@/lib/aggregations'
 
 const activitiesStore = useActivitiesStore()
+
+// Year selector
+const selectedYear = ref<number | null>(null)
+const allActivities = computed(() => activitiesStore.allActivities)
+const { years } = useActivityYears(allActivities)
+
+// Filter activities by year
+const yearFilteredActivities = computed(() => {
+  if (!activitiesStore.hasAllActivities) return []
+  if (selectedYear.value === null) return activitiesStore.allActivities
+  return activitiesStore.allActivities.filter((a) => {
+    const date = new Date(a.start_date)
+    return date.getFullYear() === selectedYear.value
+  })
+})
 
 const svgRef = ref<SVGSVGElement | null>(null)
 const containerDimensions = ref({ width: 0, height: 0 })
@@ -20,10 +37,15 @@ const weekCountOptions = [
 ]
 
 const weeklySummaries = computed(() => {
-  if (!activitiesStore.hasAllActivities) return []
+  if (yearFilteredActivities.value.length === 0 && !activitiesStore.hasAllActivities) return []
+
+  // When a year is selected, show all weeks of that year
+  if (selectedYear.value !== null) {
+    return groupByWeekWithGaps(yearFilteredActivities.value, 52)
+  }
 
   // Use groupByWeekWithGaps to include empty weeks in the range
-  return groupByWeekWithGaps(activitiesStore.allActivities, weekCount.value)
+  return groupByWeekWithGaps(yearFilteredActivities.value, weekCount.value)
 })
 
 const stats = computed(() => {
@@ -203,16 +225,23 @@ function renderChart() {
     <div class="weekly-intensity">
       <div class="page-header">
         <h1 class="page-title">Weekly Intensity</h1>
-        <div class="week-selector">
-          <button
-            v-for="option in weekCountOptions"
-            :key="option.value"
-            class="week-btn"
-            :class="{ active: weekCount === option.value }"
-            @click="weekCount = option.value as 12 | 26 | 52"
-          >
-            {{ option.label }}
-          </button>
+        <div class="header-controls">
+          <YearSelector
+            :years="years"
+            :selected-year="selectedYear"
+            @update:selected-year="selectedYear = $event"
+          />
+          <div v-if="selectedYear === null" class="week-selector">
+            <button
+              v-for="option in weekCountOptions"
+              :key="option.value"
+              class="week-btn"
+              :class="{ active: weekCount === option.value }"
+              @click="weekCount = option.value as 12 | 26 | 52"
+            >
+              {{ option.label }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -266,7 +295,7 @@ function renderChart() {
         <h2 class="section-title">Recent Weeks</h2>
         <div class="weeks-list">
           <div
-            v-for="week in weeklySummaries.slice().reverse().slice(0, 8)"
+            v-for="week in weeklySummaries.slice().reverse().slice(0, 16)"
             :key="week.weekStart"
             class="week-card"
             :class="{ 'rest-week-card': week.activityCount === 0 }"
@@ -318,6 +347,13 @@ function renderChart() {
   font-weight: 700;
   color: #1a1a2e;
   margin: 0;
+}
+
+.header-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .week-selector {

@@ -232,25 +232,7 @@ function renderChart() {
     })
     .style('pointer-events', 'none')
 
-  // Add icon for larger cells
-  cell
-    .append('text')
-    .attr('x', (d) => (d.x1 - d.x0) / 2)
-    .attr('y', (d) => (d.y1 - d.y0) / 2 + 10)
-    .attr('text-anchor', 'middle')
-    .attr('font-size', (d) => {
-      const cellWidth = d.x1 - d.x0
-      const cellHeight = d.y1 - d.y0
-      if (cellWidth < 80 || cellHeight < 80) return '0px'
-      return '24px'
-    })
-    .text((d) => {
-      const cellWidth = d.x1 - d.x0
-      const cellHeight = d.y1 - d.y0
-      if (cellWidth < 80 || cellHeight < 80) return ''
-      return getSportIcon((d.data as unknown as TreemapNode).name)
-    })
-    .style('pointer-events', 'none')
+  // Icons removed from treemap per user request
 }
 </script>
 

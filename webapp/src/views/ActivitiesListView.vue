@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import ActivityMiniMap from '@/components/ActivityMiniMap.vue'
+import SportStats from '@/components/SportStats.vue'
 import { useActivitiesStore } from '@/stores/activities'
-import { formatDistance, formatDuration, formatElevation, formatPace } from '@/lib/aggregations'
+import { formatDistance, formatDuration } from '@/lib/aggregations'
 
 const activitiesStore = useActivitiesStore()
 
@@ -95,21 +97,6 @@ onMounted(async () => {
   }
 })
 
-function getSportIcon(sportType: string | null): string {
-  const icons: Record<string, string> = {
-    Run: '🏃',
-    Ride: '🚴',
-    VirtualRide: '🚴',
-    Swim: '🏊',
-    Walk: '🚶',
-    Hike: '🥾',
-    WeightTraining: '🏋️',
-    Yoga: '🧘',
-    Workout: '💪',
-  }
-  return icons[sportType || ''] || '🏃'
-}
-
 function goToPage(page: number) {
   if (page >= 1 && page <= totalPages.value) {
     currentPage.value = page
@@ -197,37 +184,29 @@ function goToPage(page: number) {
           :to="`/activity/${activity.id}`"
           class="activity-card"
         >
-          <div class="activity-icon">{{ getSportIcon(activity.sport_type || activity.type) }}</div>
+          <ActivityMiniMap
+            :polyline-data="activity.map_summary_polyline"
+            :width="100"
+            :height="70"
+          />
           <div class="activity-content">
             <div class="activity-header">
               <span class="activity-type">{{ activity.sport_type || activity.type }}</span>
-              <span class="activity-date">
-                {{ new Date(activity.start_date).toLocaleDateString(undefined, {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                }) }}
-              </span>
+              <div class="activity-badges">
+                <span v-if="activity.photo_count && activity.photo_count > 0" class="photo-badge" :title="`${activity.photo_count} photo${activity.photo_count > 1 ? 's' : ''}`">
+                  📷 {{ activity.photo_count }}
+                </span>
+                <span class="activity-date">
+                  {{ new Date(activity.start_date).toLocaleDateString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  }) }}
+                </span>
+              </div>
             </div>
             <h3 class="activity-name">{{ activity.name }}</h3>
-            <div class="activity-stats">
-              <span v-if="activity.distance" class="stat">
-                <span class="stat-value">{{ formatDistance(activity.distance) }}</span>
-                <span class="stat-label">Distance</span>
-              </span>
-              <span v-if="activity.moving_time" class="stat">
-                <span class="stat-value">{{ formatDuration(activity.moving_time) }}</span>
-                <span class="stat-label">Time</span>
-              </span>
-              <span v-if="activity.total_elevation_gain" class="stat">
-                <span class="stat-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
-                <span class="stat-label">Elevation</span>
-              </span>
-              <span v-if="activity.average_speed && activity.distance" class="stat">
-                <span class="stat-value">{{ formatPace(activity.average_speed) }}</span>
-                <span class="stat-label">Pace</span>
-              </span>
-            </div>
+            <SportStats :activity="activity" variant="inline" class="activity-stats" />
           </div>
         </RouterLink>
       </div>
@@ -423,7 +402,7 @@ function goToPage(page: number) {
   display: flex;
   align-items: flex-start;
   gap: 1rem;
-  padding: 1.25rem;
+  padding: 1rem;
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
@@ -437,13 +416,6 @@ function goToPage(page: number) {
   transform: translateY(-2px);
 }
 
-.activity-icon {
-  font-size: 2rem;
-  padding: 0.5rem;
-  background: #f9f9f9;
-  border-radius: 8px;
-}
-
 .activity-content {
   flex: 1;
   min-width: 0;
@@ -454,6 +426,20 @@ function goToPage(page: number) {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.25rem;
+}
+
+.activity-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.photo-badge {
+  font-size: 0.75rem;
+  color: #666;
+  background: #f0f0f0;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
 }
 
 .activity-type {

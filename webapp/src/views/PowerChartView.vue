@@ -3,124 +3,151 @@ import { ref, computed, onMounted, watch } from 'vue'
 import * as d3 from 'd3'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ChartContainer from '@/components/charts/ChartContainer.vue'
+import YearSelector from '@/components/YearSelector.vue'
 import { useActivitiesStore } from '@/stores/activities'
-import { formatDate, formatDuration } from '@/lib/aggregations'
-
-interface PowerDataPoint {
-  date: Date
-  avgPower: number
-  maxPower: number
-  normalizedPower: number
-  duration: number
-  activityName: string
-  activityId: number
-}
+import { useActivityYears } from '@/composables/useActivityYears'
+import {
+  calculatePowerCurve,
+  calculatePowerCurveSync,
+  filterActivitiesByPeriod,
+  filterActivitiesByYear,
+  estimateFTP,
+  POWER_CURVE_INTERVALS,
+  type PowerCurvePoint,
+  type PowerCurve,
+} from '@/lib/powerCurve'
+import { formatDate } from '@/lib/aggregations'
 
 const activitiesStore = useActivitiesStore()
 
 const svgRef = ref<SVGSVGElement | null>(null)
 const containerDimensions = ref({ width: 0, height: 0 })
-const hoveredPoint = ref<PowerDataPoint | null>(null)
+const hoveredPoint = ref<PowerCurvePoint | null>(null)
 
-const timeRange = ref<'3m' | '6m' | '1y' | 'all'>('6m')
-const timeRangeOptions = [
+// Period selectors
+const selectedYear = ref<number | null>(null)
+const primaryPeriod = ref<'all' | '1y' | '6m' | '3m' | '90d'>('1y')
+const comparisonPeriod = ref<'all' | '1y' | '6m' | '3m' | '90d' | 'none'>('none')
+const showComparison = ref(false)
+
+// Power curves (async computed)
+const primaryCurve = ref<PowerCurve>({ points: [], period: '' })
+const comparisonCurve = ref<PowerCurve | null>(null)
+const calculatingPrimary = ref(false)
+const calculatingComparison = ref(false)
+
+const periodOptions = [
+  { value: '90d', label: '90 Days' },
   { value: '3m', label: '3 Months' },
   { value: '6m', label: '6 Months' },
   { value: '1y', label: '1 Year' },
   { value: 'all', label: 'All Time' },
 ]
 
-const metricType = ref<'avg' | 'normalized' | 'max'>('avg')
-const metricOptions = [
-  { value: 'avg', label: 'Average Power' },
-  { value: 'normalized', label: 'Normalized Power' },
-  { value: 'max', label: 'Max Power' },
-]
+// Year selector
+const allActivities = computed(() => activitiesStore.allActivities)
+const { years } = useActivityYears(allActivities)
 
-const cyclingActivities = computed(() => {
+// Filter activities by year first, then by period
+const yearFilteredActivities = computed(() => {
   if (!activitiesStore.hasAllActivities) return []
-
-  return activitiesStore.allActivities.filter(
-    (a) =>
-      (a.type === 'Ride' || a.sport_type === 'Ride' || a.sport_type === 'VirtualRide') &&
-      (a.average_watts || a.weighted_average_watts),
-  )
+  if (selectedYear.value === null) return activitiesStore.allActivities
+  return filterActivitiesByYear(activitiesStore.allActivities, selectedYear.value)
 })
 
-const powerData = computed((): PowerDataPoint[] => {
-  if (cyclingActivities.value.length === 0) return []
-
-  const now = new Date()
-  let cutoffDate: Date | null = null
-
-  switch (timeRange.value) {
-    case '3m':
-      cutoffDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate())
-      break
-    case '6m':
-      cutoffDate = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate())
-      break
-    case '1y':
-      cutoffDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate())
-      break
-    case 'all':
-    default:
-      cutoffDate = null
+// Compute primary power curve (async)
+async function computePrimaryCurve() {
+  if (yearFilteredActivities.value.length === 0) {
+    primaryCurve.value = { points: [], period: '' }
+    return
   }
 
-  return cyclingActivities.value
-    .filter((a) => !cutoffDate || new Date(a.start_date) >= cutoffDate)
-    .map((a) => ({
-      date: new Date(a.start_date),
-      avgPower: a.average_watts || 0,
-      maxPower: a.max_watts || 0,
-      normalizedPower: a.weighted_average_watts || a.average_watts || 0,
-      duration: a.moving_time || 0,
-      activityName: a.name,
-      activityId: a.id,
-    }))
-    .sort((a, b) => a.date.getTime() - b.date.getTime())
+  const filtered = filterActivitiesByPeriod(yearFilteredActivities.value, primaryPeriod.value)
+  const label = selectedYear.value
+    ? `${selectedYear.value} - ${periodOptions.find((o) => o.value === primaryPeriod.value)?.label}`
+    : periodOptions.find((o) => o.value === primaryPeriod.value)?.label || ''
+
+  // Show estimated values immediately
+  primaryCurve.value = calculatePowerCurveSync(filtered, label)
+  renderChart()
+
+  // Then compute with actual stream data
+  calculatingPrimary.value = true
+  try {
+    primaryCurve.value = await calculatePowerCurve(filtered, label)
+  } finally {
+    calculatingPrimary.value = false
+  }
+}
+
+// Compute comparison power curve (async)
+async function computeComparisonCurve() {
+  if (!showComparison.value || comparisonPeriod.value === 'none') {
+    comparisonCurve.value = null
+    return
+  }
+
+  if (yearFilteredActivities.value.length === 0) {
+    comparisonCurve.value = null
+    return
+  }
+
+  const filtered = filterActivitiesByPeriod(yearFilteredActivities.value, comparisonPeriod.value)
+  const label = periodOptions.find((o) => o.value === comparisonPeriod.value)?.label || ''
+
+  // Show estimated values immediately
+  comparisonCurve.value = calculatePowerCurveSync(filtered, label)
+  renderChart()
+
+  // Then compute with actual stream data
+  calculatingComparison.value = true
+  try {
+    comparisonCurve.value = await calculatePowerCurve(filtered, label)
+  } finally {
+    calculatingComparison.value = false
+  }
+}
+
+// Watch for changes that require recomputation
+watch(
+  [yearFilteredActivities, primaryPeriod, selectedYear],
+  () => {
+    computePrimaryCurve()
+  },
+  { immediate: true },
+)
+
+watch([showComparison, comparisonPeriod, yearFilteredActivities], () => {
+  computeComparisonCurve()
 })
 
+// Stats
 const stats = computed(() => {
-  if (powerData.value.length === 0) {
+  const curve = primaryCurve.value
+  if (curve.points.length === 0) {
     return {
-      avgPower: 0,
-      maxAvgPower: 0,
+      ftp: null,
       maxPower: 0,
-      recentTrend: 0,
-      totalRides: 0,
+      peak5s: 0,
+      peak1m: 0,
+      peak5m: 0,
+      peak20m: 0,
     }
   }
 
-  const avgPowers = powerData.value.map((d) => d.avgPower)
-  const avgPower = Math.round(avgPowers.reduce((a, b) => a + b, 0) / avgPowers.length)
-  const maxAvgPower = Math.max(...avgPowers)
-  const maxPower = Math.max(...powerData.value.map((d) => d.maxPower))
+  const ftp = estimateFTP(curve)
+  const maxPower = Math.max(...curve.points.map((p) => p.power))
+  const peak5s = curve.points.find((p) => p.duration === 5)?.power || 0
+  const peak1m = curve.points.find((p) => p.duration === 60)?.power || 0
+  const peak5m = curve.points.find((p) => p.duration === 300)?.power || 0
+  const peak20m = curve.points.find((p) => p.duration === 1200)?.power || 0
 
-  // Calculate 30-day trend
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
-  const sixtyDaysAgo = new Date()
-  sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60)
+  return { ftp, maxPower, peak5s, peak1m, peak5m, peak20m }
+})
 
-  const recentRides = powerData.value.filter((d) => d.date >= thirtyDaysAgo)
-  const previousRides = powerData.value.filter((d) => d.date >= sixtyDaysAgo && d.date < thirtyDaysAgo)
-
-  let recentTrend = 0
-  if (recentRides.length > 0 && previousRides.length > 0) {
-    const recentAvg = recentRides.reduce((sum, d) => sum + d.avgPower, 0) / recentRides.length
-    const prevAvg = previousRides.reduce((sum, d) => sum + d.avgPower, 0) / previousRides.length
-    recentTrend = prevAvg > 0 ? Math.round(((recentAvg - prevAvg) / prevAvg) * 100) : 0
-  }
-
-  return {
-    avgPower,
-    maxAvgPower,
-    maxPower,
-    recentTrend,
-    totalRides: powerData.value.length,
-  }
+// Check if any points are from actual stream data
+const hasStreamData = computed(() => {
+  return primaryCurve.value.points.some((p) => p.fromStream)
 })
 
 onMounted(async () => {
@@ -134,24 +161,12 @@ function onResize(dimensions: { width: number; height: number }) {
   renderChart()
 }
 
-watch([powerData, containerDimensions, metricType], () => {
+watch([primaryCurve, comparisonCurve, containerDimensions], () => {
   renderChart()
-})
-
-function getMetricValue(d: PowerDataPoint): number {
-  switch (metricType.value) {
-    case 'normalized':
-      return d.normalizedPower
-    case 'max':
-      return d.maxPower
-    case 'avg':
-    default:
-      return d.avgPower
-  }
-}
+}, { deep: true })
 
 function renderChart() {
-  if (!svgRef.value || powerData.value.length === 0) return
+  if (!svgRef.value || primaryCurve.value.points.length === 0) return
 
   const { width, height } = containerDimensions.value
   if (width === 0 || height === 0) return
@@ -159,7 +174,7 @@ function renderChart() {
   const svg = d3.select(svgRef.value)
   svg.selectAll('*').remove()
 
-  const margin = { top: 20, right: 30, bottom: 40, left: 50 }
+  const margin = { top: 20, right: 30, bottom: 50, left: 60 }
   const chartWidth = width - margin.left - margin.right
   const chartHeight = height - margin.top - margin.bottom
 
@@ -167,19 +182,20 @@ function renderChart() {
 
   const g = svg.append('g').attr('transform', `translate(${margin.left}, ${margin.top})`)
 
-  const data = powerData.value
+  const primaryData = primaryCurve.value.points
+  const comparisonData = comparisonCurve.value?.points || []
 
-  // Scales
+  // Combine data for scale calculation
+  const allData = [...primaryData, ...comparisonData]
+
+  // Log scale for x-axis (time)
   const xScale = d3
-    .scaleTime()
-    .domain(d3.extent(data, (d) => d.date) as [Date, Date])
+    .scaleLog()
+    .domain([5, 7200]) // 5 seconds to 2 hours
     .range([0, chartWidth])
 
-  const yMax = Math.max(...data.map((d) => getMetricValue(d)))
-  const yScale = d3
-    .scaleLinear()
-    .domain([0, yMax * 1.1])
-    .range([chartHeight, 0])
+  const yMax = Math.max(...allData.map((d) => d.power)) * 1.1
+  const yScale = d3.scaleLinear().domain([0, yMax]).range([chartHeight, 0])
 
   // Grid lines
   g.append('g')
@@ -196,68 +212,113 @@ function renderChart() {
 
   g.select('.grid').select('.domain').remove()
 
-  // Trend line (moving average)
-  if (data.length >= 7) {
-    const windowSize = Math.min(7, Math.floor(data.length / 3))
-    const movingAvg: { date: Date; value: number }[] = []
+  // Line generator
+  const line = d3
+    .line<PowerCurvePoint>()
+    .x((d) => xScale(d.duration))
+    .y((d) => yScale(d.power))
+    .curve(d3.curveMonotoneX)
 
-    for (let i = windowSize - 1; i < data.length; i++) {
-      const window = data.slice(i - windowSize + 1, i + 1)
-      const avg = window.reduce((sum, d) => sum + getMetricValue(d), 0) / windowSize
-      const lastPoint = window[window.length - 1]
-      if (lastPoint) {
-        movingAvg.push({ date: lastPoint.date, value: avg })
-      }
-    }
-
-    const trendLine = d3
-      .line<{ date: Date; value: number }>()
-      .x((d) => xScale(d.date))
-      .y((d) => yScale(d.value))
-      .curve(d3.curveMonotoneX)
-
+  // Draw comparison curve first (behind)
+  if (comparisonData.length > 0) {
     g.append('path')
-      .datum(movingAvg)
+      .datum(comparisonData)
       .attr('fill', 'none')
-      .attr('stroke', '#fc4c02')
+      .attr('stroke', '#999')
       .attr('stroke-width', 2)
-      .attr('stroke-opacity', 0.8)
-      .attr('d', trendLine)
+      .attr('stroke-dasharray', '5,5')
+      .attr('d', line)
+
+    // Comparison points
+    g.selectAll('.comparison-point')
+      .data(comparisonData)
+      .enter()
+      .append('circle')
+      .attr('class', 'comparison-point')
+      .attr('cx', (d) => xScale(d.duration))
+      .attr('cy', (d) => yScale(d.power))
+      .attr('r', 4)
+      .attr('fill', '#999')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 1)
   }
 
-  // Data points
-  g.selectAll('.point')
-    .data(data)
+  // Draw primary curve
+  g.append('path')
+    .datum(primaryData)
+    .attr('fill', 'none')
+    .attr('stroke', '#fc4c02')
+    .attr('stroke-width', 3)
+    .attr('d', line)
+
+  // Primary points (interactive)
+  g.selectAll('.primary-point')
+    .data(primaryData)
     .enter()
     .append('circle')
-    .attr('class', 'point')
-    .attr('cx', (d) => xScale(d.date))
-    .attr('cy', (d) => yScale(getMetricValue(d)))
-    .attr('r', 5)
+    .attr('class', 'primary-point')
+    .attr('cx', (d) => xScale(d.duration))
+    .attr('cy', (d) => yScale(d.power))
+    .attr('r', 6)
     .attr('fill', '#fc4c02')
-    .attr('fill-opacity', 0.6)
     .attr('stroke', '#fff')
-    .attr('stroke-width', 1)
+    .attr('stroke-width', 2)
     .style('cursor', 'pointer')
     .on('mouseover', function (event, d) {
-      d3.select(this).attr('r', 7).attr('fill-opacity', 1)
+      d3.select(this).attr('r', 8)
       hoveredPoint.value = d
     })
     .on('mouseout', function () {
-      d3.select(this).attr('r', 5).attr('fill-opacity', 0.6)
+      d3.select(this).attr('r', 6)
       hoveredPoint.value = null
     })
 
-  // X axis
-  const xAxis = g.append('g').attr('transform', `translate(0, ${chartHeight})`).call(
-    d3
-      .axisBottom(xScale)
-      .ticks(width > 600 ? 8 : 4)
-      .tickFormat((d) => d3.timeFormat('%b %d')(d as Date)),
-  )
+  // FTP line if available
+  if (stats.value.ftp) {
+    g.append('line')
+      .attr('x1', 0)
+      .attr('x2', chartWidth)
+      .attr('y1', yScale(stats.value.ftp))
+      .attr('y2', yScale(stats.value.ftp))
+      .attr('stroke', '#2196f3')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '8,4')
+
+    g.append('text')
+      .attr('x', chartWidth - 5)
+      .attr('y', yScale(stats.value.ftp) - 5)
+      .attr('text-anchor', 'end')
+      .attr('font-size', '10px')
+      .attr('fill', '#2196f3')
+      .text(`FTP: ${stats.value.ftp}W`)
+  }
+
+  // X axis with custom tick format
+  const xTicks = POWER_CURVE_INTERVALS.map((i) => i.seconds)
+  const xAxis = g
+    .append('g')
+    .attr('transform', `translate(0, ${chartHeight})`)
+    .call(
+      d3
+        .axisBottom(xScale)
+        .tickValues(xTicks)
+        .tickFormat((d) => {
+          const interval = POWER_CURVE_INTERVALS.find((i) => i.seconds === d)
+          return interval?.label || ''
+        }),
+    )
 
   xAxis.selectAll('text').attr('font-size', '10px').attr('fill', '#666')
   xAxis.select('.domain').attr('stroke', '#e0e0e0')
+
+  // X axis label
+  g.append('text')
+    .attr('x', chartWidth / 2)
+    .attr('y', chartHeight + 40)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '12px')
+    .attr('fill', '#666')
+    .text('Duration')
 
   // Y axis
   const yAxis = g.append('g').call(d3.axisLeft(yScale).ticks(6).tickFormat((d) => `${d}W`))
@@ -268,12 +329,64 @@ function renderChart() {
   // Y axis label
   g.append('text')
     .attr('transform', 'rotate(-90)')
-    .attr('y', -40)
+    .attr('y', -45)
     .attr('x', -chartHeight / 2)
     .attr('text-anchor', 'middle')
     .attr('font-size', '12px')
     .attr('fill', '#666')
     .text('Power (Watts)')
+
+  // Legend
+  const legend = svg.append('g').attr('transform', `translate(${margin.left + 10}, ${margin.top + 10})`)
+
+  legend
+    .append('line')
+    .attr('x1', 0)
+    .attr('x2', 20)
+    .attr('y1', 0)
+    .attr('y2', 0)
+    .attr('stroke', '#fc4c02')
+    .attr('stroke-width', 3)
+
+  legend
+    .append('text')
+    .attr('x', 25)
+    .attr('y', 4)
+    .attr('font-size', '11px')
+    .attr('fill', '#666')
+    .text(primaryCurve.value.period)
+
+  if (comparisonData.length > 0 && comparisonCurve.value) {
+    const compLegend = legend.append('g').attr('transform', 'translate(0, 18)')
+
+    compLegend
+      .append('line')
+      .attr('x1', 0)
+      .attr('x2', 20)
+      .attr('y1', 0)
+      .attr('y2', 0)
+      .attr('stroke', '#999')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '5,5')
+
+    compLegend
+      .append('text')
+      .attr('x', 25)
+      .attr('y', 4)
+      .attr('font-size', '11px')
+      .attr('fill', '#999')
+      .text(comparisonCurve.value.period)
+  }
+}
+
+function toggleComparison() {
+  showComparison.value = !showComparison.value
+  if (!showComparison.value) {
+    comparisonPeriod.value = 'none'
+  } else if (comparisonPeriod.value === 'none') {
+    // Default to previous period
+    comparisonPeriod.value = primaryPeriod.value === '1y' ? 'all' : '1y'
+  }
 }
 </script>
 
@@ -281,15 +394,73 @@ function renderChart() {
   <DashboardLayout>
     <div class="power-chart">
       <div class="page-header">
-        <h1 class="page-title">Cycling Power</h1>
-        <div class="controls">
-          <div class="time-range-selector">
+        <h1 class="page-title">Power Curve</h1>
+        <div class="header-controls">
+          <YearSelector
+            :years="years"
+            :selected-year="selectedYear"
+            @update:selected-year="selectedYear = $event"
+          />
+        </div>
+      </div>
+
+      <!-- Stats Summary -->
+      <div class="stats-row">
+        <div class="stat-item" v-if="stats.ftp">
+          <span class="stat-value">{{ stats.ftp }}W</span>
+          <span class="stat-label">Estimated FTP</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">{{ stats.peak5s }}W</span>
+          <span class="stat-label">Peak 5s</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">{{ stats.peak1m }}W</span>
+          <span class="stat-label">Peak 1min</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">{{ stats.peak5m }}W</span>
+          <span class="stat-label">Peak 5min</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value">{{ stats.peak20m }}W</span>
+          <span class="stat-label">Peak 20min</span>
+        </div>
+      </div>
+
+      <!-- Period Selectors -->
+      <div class="period-controls">
+        <div class="period-row">
+          <span class="period-label">Period:</span>
+          <div class="period-selector">
             <button
-              v-for="option in timeRangeOptions"
+              v-for="option in periodOptions"
               :key="option.value"
-              class="range-btn"
-              :class="{ active: timeRange === option.value }"
-              @click="timeRange = option.value as '3m' | '6m' | '1y' | 'all'"
+              class="period-btn"
+              :class="{ active: primaryPeriod === option.value }"
+              @click="primaryPeriod = option.value as typeof primaryPeriod"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <button
+            class="compare-btn"
+            :class="{ active: showComparison }"
+            @click="toggleComparison"
+          >
+            {{ showComparison ? 'Hide Compare' : 'Compare' }}
+          </button>
+        </div>
+
+        <div v-if="showComparison" class="period-row comparison-row">
+          <span class="period-label">Compare to:</span>
+          <div class="period-selector">
+            <button
+              v-for="option in periodOptions"
+              :key="option.value"
+              class="period-btn comparison"
+              :class="{ active: comparisonPeriod === option.value }"
+              @click="comparisonPeriod = option.value as typeof comparisonPeriod"
             >
               {{ option.label }}
             </button>
@@ -297,45 +468,9 @@ function renderChart() {
         </div>
       </div>
 
-      <!-- Stats Summary -->
-      <div class="stats-row">
-        <div class="stat-item">
-          <span class="stat-value">{{ stats.avgPower }}W</span>
-          <span class="stat-label">Avg Power</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">{{ stats.maxAvgPower }}W</span>
-          <span class="stat-label">Best Avg Power</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value">{{ stats.maxPower }}W</span>
-          <span class="stat-label">Peak Power</span>
-        </div>
-        <div class="stat-item">
-          <span class="stat-value" :class="{ positive: stats.recentTrend > 0, negative: stats.recentTrend < 0 }">
-            {{ stats.recentTrend > 0 ? '+' : '' }}{{ stats.recentTrend }}%
-          </span>
-          <span class="stat-label">30-Day Trend</span>
-        </div>
-      </div>
-
-      <!-- Metric Selector -->
-      <div class="metric-selector">
-        <span class="metric-label">Show:</span>
-        <button
-          v-for="option in metricOptions"
-          :key="option.value"
-          class="metric-btn"
-          :class="{ active: metricType === option.value }"
-          @click="metricType = option.value as 'avg' | 'normalized' | 'max'"
-        >
-          {{ option.label }}
-        </button>
-      </div>
-
-      <!-- Power Chart -->
+      <!-- Power Curve Chart -->
       <ChartContainer
-        title="Power Over Time"
+        title="Best Efforts Power Curve"
         :loading="activitiesStore.loadingAll"
         :error="activitiesStore.error"
         height="400px"
@@ -346,55 +481,57 @@ function renderChart() {
         </template>
         <template #footer>
           <div v-if="hoveredPoint" class="hover-details">
-            <strong>{{ hoveredPoint.activityName }}</strong>
+            <strong>{{ hoveredPoint.durationLabel }} Best: {{ hoveredPoint.power }}W</strong>
+            <span v-if="hoveredPoint.fromStream" class="data-source stream">from activity data</span>
+            <span v-else class="data-source estimated">estimated</span>
             <div class="hover-stats">
-              <span>{{ formatDate(hoveredPoint.date) }}</span>
-              <span>Avg: {{ hoveredPoint.avgPower }}W</span>
-              <span v-if="hoveredPoint.normalizedPower !== hoveredPoint.avgPower">
-                NP: {{ hoveredPoint.normalizedPower }}W
-              </span>
-              <span>Max: {{ hoveredPoint.maxPower }}W</span>
-              <span>{{ formatDuration(hoveredPoint.duration) }}</span>
+              <RouterLink :to="`/activity/${hoveredPoint.activityId}`" class="activity-link">
+                {{ hoveredPoint.activityName }}
+              </RouterLink>
+              <span>{{ formatDate(new Date(hoveredPoint.activityDate)) }}</span>
             </div>
           </div>
-          <div v-else-if="powerData.length === 0" class="hover-placeholder">
+          <div v-else-if="primaryCurve.points.length === 0" class="hover-placeholder">
             No cycling activities with power data found
           </div>
           <div v-else class="hover-placeholder">
-            Hover over points to see ride details. Orange line shows {{ stats.totalRides >= 7 ? '7-ride' : '' }} moving average.
+            <span v-if="calculatingPrimary">Calculating from activity data...</span>
+            <span v-else-if="hasStreamData">
+              Power values calculated from actual ride data. Hover over points for details.
+            </span>
+            <span v-else>
+              Power values estimated from activity averages. Sync activities with stream data for accurate values.
+            </span>
           </div>
         </template>
       </ChartContainer>
 
-      <!-- Recent Rides with Power -->
-      <div v-if="powerData.length > 0" class="section">
-        <h2 class="section-title">Recent Rides</h2>
-        <div class="rides-list">
-          <RouterLink
-            v-for="ride in powerData.slice().reverse().slice(0, 10)"
-            :key="ride.activityId"
-            :to="`/activity/${ride.activityId}`"
-            class="ride-card"
-          >
-            <div class="ride-header">
-              <span class="ride-name">{{ ride.activityName }}</span>
-              <span class="ride-date">{{ formatDate(ride.date) }}</span>
-            </div>
-            <div class="ride-power">
-              <div class="power-bar">
-                <div
-                  class="power-fill"
-                  :style="{ width: `${Math.min(100, (ride.avgPower / stats.maxAvgPower) * 100)}%` }"
-                ></div>
-              </div>
-              <span class="power-value">{{ ride.avgPower }}W</span>
-            </div>
-            <div class="ride-stats">
-              <span v-if="ride.normalizedPower !== ride.avgPower">NP: {{ ride.normalizedPower }}W</span>
-              <span>Max: {{ ride.maxPower }}W</span>
-              <span>{{ formatDuration(ride.duration) }}</span>
-            </div>
-          </RouterLink>
+      <!-- Best Efforts Table -->
+      <div v-if="primaryCurve.points.length > 0" class="section">
+        <h2 class="section-title">Best Efforts</h2>
+        <div class="efforts-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Duration</th>
+                <th>Power</th>
+                <th>Activity</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="point in primaryCurve.points" :key="point.duration">
+                <td class="duration-cell">{{ point.durationLabel }}</td>
+                <td class="power-cell">{{ point.power }}W</td>
+                <td>
+                  <RouterLink :to="`/activity/${point.activityId}`" class="activity-link">
+                    {{ point.activityName }}
+                  </RouterLink>
+                </td>
+                <td class="date-cell">{{ formatDate(new Date(point.activityDate)) }}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -424,38 +561,11 @@ function renderChart() {
   margin: 0;
 }
 
-.controls {
+.header-controls {
   display: flex;
   gap: 1rem;
+  align-items: center;
   flex-wrap: wrap;
-}
-
-.time-range-selector {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.range-btn,
-.metric-btn {
-  padding: 0.5rem 1rem;
-  border: 1px solid #e0e0e0;
-  background: #fff;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: all 0.2s;
-}
-
-.range-btn:hover,
-.metric-btn:hover {
-  border-color: #fc4c02;
-}
-
-.range-btn.active,
-.metric-btn.active {
-  background: #fc4c02;
-  border-color: #fc4c02;
-  color: #fff;
 }
 
 .stats-row {
@@ -467,7 +577,7 @@ function renderChart() {
 
 .stat-item {
   flex: 1;
-  min-width: 140px;
+  min-width: 120px;
   background: #fff;
   border-radius: 12px;
   padding: 1rem 1.25rem;
@@ -481,30 +591,98 @@ function renderChart() {
   color: #fc4c02;
 }
 
-.stat-value.positive {
-  color: #4caf50;
-}
-
-.stat-value.negative {
-  color: #f44336;
-}
-
 .stat-label {
   font-size: 0.75rem;
   color: #666;
   text-transform: uppercase;
 }
 
-.metric-selector {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
+.period-controls {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1rem;
   margin-bottom: 1rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.metric-label {
+.period-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.comparison-row {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e0e0e0;
+}
+
+.period-label {
   font-size: 0.875rem;
   color: #666;
+  min-width: 80px;
+}
+
+.period-selector {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.period-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.period-btn:hover {
+  border-color: #fc4c02;
+}
+
+.period-btn.active {
+  background: #fc4c02;
+  border-color: #fc4c02;
+  color: #fff;
+}
+
+.period-btn.comparison {
+  border-color: #999;
+}
+
+.period-btn.comparison:hover {
+  border-color: #666;
+}
+
+.period-btn.comparison.active {
+  background: #666;
+  border-color: #666;
+  color: #fff;
+}
+
+.compare-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #2196f3;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: #2196f3;
+  transition: all 0.2s;
+  margin-left: auto;
+}
+
+.compare-btn:hover {
+  background: #e3f2fd;
+}
+
+.compare-btn.active {
+  background: #2196f3;
+  color: #fff;
 }
 
 .hover-details,
@@ -524,6 +702,32 @@ function renderChart() {
   font-style: italic;
 }
 
+.data-source {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  margin-left: 0.5rem;
+}
+
+.data-source.stream {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.data-source.estimated {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.activity-link {
+  color: #fc4c02;
+  text-decoration: none;
+}
+
+.activity-link:hover {
+  text-decoration: underline;
+}
+
 .section {
   background: #fff;
   border-radius: 12px;
@@ -539,77 +743,48 @@ function renderChart() {
   margin: 0 0 1rem 0;
 }
 
-.rides-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.efforts-table {
+  overflow-x: auto;
 }
 
-.ride-card {
-  display: block;
-  padding: 1rem;
-  background: #f9f9f9;
-  border-radius: 8px;
-  text-decoration: none;
-  color: inherit;
-  transition: background 0.2s;
+.efforts-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
 }
 
-.ride-card:hover {
-  background: #f0f0f0;
-}
-
-.ride-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.ride-name {
+.efforts-table th {
+  text-align: left;
+  padding: 0.75rem 0.5rem;
+  border-bottom: 2px solid #e0e0e0;
   font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.efforts-table td {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
   color: #1a1a2e;
 }
 
-.ride-date {
-  font-size: 0.75rem;
-  color: #999;
+.efforts-table tr:hover {
+  background: #f9f9f9;
 }
 
-.ride-power {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 0.5rem;
-}
-
-.power-bar {
-  flex: 1;
-  height: 8px;
-  background: #e0e0e0;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.power-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #fc4c02, #ff7043);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.power-value {
-  font-weight: 700;
+.duration-cell {
+  font-weight: 600;
   color: #fc4c02;
-  min-width: 60px;
-  text-align: right;
 }
 
-.ride-stats {
-  display: flex;
-  gap: 1rem;
-  font-size: 0.75rem;
-  color: #666;
+.power-cell {
+  font-weight: 700;
+  font-family: monospace;
+}
+
+.date-cell {
+  color: #999;
 }
 
 @media (max-width: 768px) {
@@ -621,13 +796,13 @@ function renderChart() {
     min-width: 100%;
   }
 
-  .metric-selector {
-    flex-wrap: wrap;
+  .period-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
-  .hover-stats {
-    flex-direction: column;
-    gap: 0.25rem;
+  .compare-btn {
+    margin-left: 0;
   }
 }
 </style>

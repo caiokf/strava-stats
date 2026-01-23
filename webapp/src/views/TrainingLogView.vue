@@ -3,10 +3,27 @@ import { ref, computed, onMounted, watch } from 'vue'
 import * as d3 from 'd3'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ChartContainer from '@/components/charts/ChartContainer.vue'
+import YearSelector from '@/components/YearSelector.vue'
 import { useActivitiesStore } from '@/stores/activities'
+import { useActivityYears } from '@/composables/useActivityYears'
 import { calculateCalendarData, formatDate, type CalendarDay } from '@/lib/aggregations'
 
 const activitiesStore = useActivitiesStore()
+
+// Year selector
+const selectedYear = ref<number | null>(null)
+const allActivities = computed(() => activitiesStore.allActivities)
+const { years } = useActivityYears(allActivities)
+
+// Filter activities by year
+const yearFilteredActivities = computed(() => {
+  if (!activitiesStore.hasAllActivities) return []
+  if (selectedYear.value === null) return activitiesStore.allActivities
+  return activitiesStore.allActivities.filter((a) => {
+    const date = new Date(a.start_date)
+    return date.getFullYear() === selectedYear.value
+  })
+})
 
 const svgRef = ref<SVGSVGElement | null>(null)
 const containerDimensions = ref({ width: 0, height: 0 })
@@ -33,13 +50,23 @@ const dateRangeDays = computed(() => {
 })
 
 const calendarData = computed(() => {
-  if (!activitiesStore.hasAllActivities) return []
+  if (yearFilteredActivities.value.length === 0 && !activitiesStore.hasAllActivities) return []
 
-  const endDate = new Date()
-  const startDate = new Date()
-  startDate.setDate(startDate.getDate() - dateRangeDays.value)
+  let endDate: Date
+  let startDate: Date
 
-  return calculateCalendarData(activitiesStore.allActivities, startDate, endDate)
+  if (selectedYear.value !== null) {
+    // Show full year when a year is selected
+    endDate = new Date(selectedYear.value, 11, 31)
+    startDate = new Date(selectedYear.value, 0, 1)
+  } else {
+    // Use date range when "All" is selected
+    endDate = new Date()
+    startDate = new Date()
+    startDate.setDate(startDate.getDate() - dateRangeDays.value)
+  }
+
+  return calculateCalendarData(yearFilteredActivities.value, startDate, endDate)
 })
 
 const stats = computed(() => {
@@ -246,16 +273,23 @@ function renderChart() {
     <div class="training-log">
       <div class="page-header">
         <h1 class="page-title">Training Log</h1>
-        <div class="date-range-selector">
-          <button
-            v-for="option in dateRangeOptions"
-            :key="option.value"
-            class="range-btn"
-            :class="{ active: dateRange === option.value }"
-            @click="dateRange = option.value as '3m' | '6m' | '1y'"
-          >
-            {{ option.label }}
-          </button>
+        <div class="header-controls">
+          <YearSelector
+            :years="years"
+            :selected-year="selectedYear"
+            @update:selected-year="selectedYear = $event"
+          />
+          <div v-if="selectedYear === null" class="date-range-selector">
+            <button
+              v-for="option in dateRangeOptions"
+              :key="option.value"
+              class="range-btn"
+              :class="{ active: dateRange === option.value }"
+              @click="dateRange = option.value as '3m' | '6m' | '1y'"
+            >
+              {{ option.label }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -334,6 +368,13 @@ function renderChart() {
   font-weight: 700;
   color: #1a1a2e;
   margin: 0;
+}
+
+.header-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .date-range-selector {

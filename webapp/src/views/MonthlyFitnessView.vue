@@ -3,7 +3,9 @@ import { ref, computed, onMounted, watch } from 'vue'
 import * as d3 from 'd3'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import ChartContainer from '@/components/charts/ChartContainer.vue'
+import YearSelector from '@/components/YearSelector.vue'
 import { useActivitiesStore } from '@/stores/activities'
+import { useActivityYears } from '@/composables/useActivityYears'
 import {
   activitiesToDailyLoads,
   calculateFitnessMetrics,
@@ -19,6 +21,16 @@ const svgRef = ref<SVGSVGElement | null>(null)
 const containerDimensions = ref({ width: 0, height: 0 })
 const hoveredPoint = ref<FitnessMetrics | null>(null)
 
+// Line visibility toggles
+const showFitness = ref(true)
+const showFatigue = ref(true)
+const showForm = ref(true)
+
+// Year filter
+const selectedYear = ref<number | null>(null)
+const allActivities = computed(() => activitiesStore.allActivities)
+const { years } = useActivityYears(allActivities)
+
 const timeRange = ref<'3m' | '6m' | '1y' | 'all'>('6m')
 const timeRangeOptions = [
   { value: '3m', label: '3 Months' },
@@ -27,10 +39,21 @@ const timeRangeOptions = [
   { value: 'all', label: 'All Time' },
 ]
 
-const fitnessMetrics = computed(() => {
+// Filter activities by selected year
+const yearFilteredActivities = computed(() => {
   if (!activitiesStore.hasAllActivities) return []
+  if (selectedYear.value === null) return activitiesStore.allActivities
 
-  const dailyLoads = activitiesToDailyLoads(activitiesStore.allActivities)
+  return activitiesStore.allActivities.filter((a) => {
+    const date = new Date(a.start_date)
+    return date.getFullYear() === selectedYear.value
+  })
+})
+
+const fitnessMetrics = computed(() => {
+  if (yearFilteredActivities.value.length === 0) return []
+
+  const dailyLoads = activitiesToDailyLoads(yearFilteredActivities.value)
   return calculateFitnessMetrics(dailyLoads)
 })
 
@@ -99,7 +122,7 @@ function onResize(dimensions: { width: number; height: number }) {
   renderChart()
 }
 
-watch([filteredMetrics, containerDimensions], () => {
+watch([filteredMetrics, containerDimensions, showFitness, showFatigue, showForm], () => {
   renderChart()
 })
 
@@ -128,7 +151,12 @@ function renderChart() {
     .domain(d3.extent(data, (d) => new Date(d.date)) as [Date, Date])
     .range([0, chartWidth])
 
-  const allValues = data.flatMap((d) => [d.ctl, d.atl, d.tsb])
+  // Collect only visible line values for scale
+  const allValues: number[] = []
+  if (showFitness.value) allValues.push(...data.map((d) => d.ctl))
+  if (showFatigue.value) allValues.push(...data.map((d) => d.atl))
+  if (showForm.value) allValues.push(...data.map((d) => d.tsb))
+  if (allValues.length === 0) allValues.push(0) // Fallback
   const yMin = Math.min(...allValues, 0)
   const yMax = Math.max(...allValues)
   const yPadding = (yMax - yMin) * 0.1
@@ -185,28 +213,34 @@ function renderChart() {
     .curve(d3.curveMonotoneX)
 
   // Draw CTL (Fitness) line
-  g.append('path')
-    .datum(data)
-    .attr('fill', 'none')
-    .attr('stroke', '#2196f3')
-    .attr('stroke-width', 2)
-    .attr('d', ctlLine)
+  if (showFitness.value) {
+    g.append('path')
+      .datum(data)
+      .attr('fill', 'none')
+      .attr('stroke', '#2196f3')
+      .attr('stroke-width', 2)
+      .attr('d', ctlLine)
+  }
 
   // Draw ATL (Fatigue) line
-  g.append('path')
-    .datum(data)
-    .attr('fill', 'none')
-    .attr('stroke', '#f44336')
-    .attr('stroke-width', 2)
-    .attr('d', atlLine)
+  if (showFatigue.value) {
+    g.append('path')
+      .datum(data)
+      .attr('fill', 'none')
+      .attr('stroke', '#f44336')
+      .attr('stroke-width', 2)
+      .attr('d', atlLine)
+  }
 
   // Draw TSB (Form) line
-  g.append('path')
-    .datum(data)
-    .attr('fill', 'none')
-    .attr('stroke', '#4caf50')
-    .attr('stroke-width', 2)
-    .attr('d', tsbLine)
+  if (showForm.value) {
+    g.append('path')
+      .datum(data)
+      .attr('fill', 'none')
+      .attr('stroke', '#4caf50')
+      .attr('stroke-width', 2)
+      .attr('d', tsbLine)
+  }
 
   // X axis
   const xAxis = g.append('g').attr('transform', `translate(0, ${chartHeight})`).call(
@@ -225,14 +259,13 @@ function renderChart() {
   yAxis.selectAll('text').attr('font-size', '11px').attr('fill', '#666')
   yAxis.select('.domain').remove()
 
-  // Legend
+  // Legend - only show visible lines
   const legend = svg.append('g').attr('transform', `translate(${width - 70}, ${margin.top})`)
 
-  const legendItems = [
-    { label: 'Fitness (CTL)', color: '#2196f3' },
-    { label: 'Fatigue (ATL)', color: '#f44336' },
-    { label: 'Form (TSB)', color: '#4caf50' },
-  ]
+  const legendItems: { label: string; color: string }[] = []
+  if (showFitness.value) legendItems.push({ label: 'Fitness', color: '#2196f3' })
+  if (showFatigue.value) legendItems.push({ label: 'Fatigue', color: '#f44336' })
+  if (showForm.value) legendItems.push({ label: 'Form', color: '#4caf50' })
 
   legendItems.forEach((item, i) => {
     const legendItem = legend.append('g').attr('transform', `translate(0, ${i * 20})`)
@@ -268,11 +301,18 @@ function renderChart() {
     .attr('stroke', '#999')
     .attr('stroke-dasharray', '3,3')
 
-  const ctlCircle = hoverGroup.append('circle').attr('r', 4).attr('fill', '#2196f3')
+  // Only create hover circles for visible lines
+  const ctlCircle = showFitness.value
+    ? hoverGroup.append('circle').attr('r', 4).attr('fill', '#2196f3')
+    : null
 
-  const atlCircle = hoverGroup.append('circle').attr('r', 4).attr('fill', '#f44336')
+  const atlCircle = showFatigue.value
+    ? hoverGroup.append('circle').attr('r', 4).attr('fill', '#f44336')
+    : null
 
-  const tsbCircle = hoverGroup.append('circle').attr('r', 4).attr('fill', '#4caf50')
+  const tsbCircle = showForm.value
+    ? hoverGroup.append('circle').attr('r', 4).attr('fill', '#4caf50')
+    : null
 
   svg
     .append('rect')
@@ -298,9 +338,9 @@ function renderChart() {
 
       hoverGroup.style('display', null)
       hoverGroup.select('.hover-line').attr('x1', x).attr('x2', x)
-      ctlCircle.attr('cx', x).attr('cy', yScale(d.ctl))
-      atlCircle.attr('cx', x).attr('cy', yScale(d.atl))
-      tsbCircle.attr('cx', x).attr('cy', yScale(d.tsb))
+      if (ctlCircle) ctlCircle.attr('cx', x).attr('cy', yScale(d.ctl))
+      if (atlCircle) atlCircle.attr('cx', x).attr('cy', yScale(d.atl))
+      if (tsbCircle) tsbCircle.attr('cx', x).attr('cy', yScale(d.tsb))
 
       hoveredPoint.value = d
     })
@@ -316,17 +356,43 @@ function renderChart() {
     <div class="monthly-fitness">
       <div class="page-header">
         <h1 class="page-title">Monthly Fitness</h1>
-        <div class="time-range-selector">
-          <button
-            v-for="option in timeRangeOptions"
-            :key="option.value"
-            class="range-btn"
-            :class="{ active: timeRange === option.value }"
-            @click="timeRange = option.value as '3m' | '6m' | '1y' | 'all'"
-          >
-            {{ option.label }}
-          </button>
+        <div class="header-controls">
+          <YearSelector
+            :years="years"
+            :selected-year="selectedYear"
+            @update:selected-year="selectedYear = $event"
+          />
+          <div class="time-range-selector">
+            <button
+              v-for="option in timeRangeOptions"
+              :key="option.value"
+              class="range-btn"
+              :class="{ active: timeRange === option.value }"
+              @click="timeRange = option.value as '3m' | '6m' | '1y' | 'all'"
+            >
+              {{ option.label }}
+            </button>
+          </div>
         </div>
+      </div>
+
+      <!-- Line Visibility Toggles -->
+      <div class="line-toggles">
+        <label class="toggle-item">
+          <input type="checkbox" v-model="showFitness" />
+          <span class="toggle-color" style="background: #2196f3"></span>
+          <span class="toggle-label">Fitness</span>
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" v-model="showFatigue" />
+          <span class="toggle-color" style="background: #f44336"></span>
+          <span class="toggle-label">Fatigue</span>
+        </label>
+        <label class="toggle-item">
+          <input type="checkbox" v-model="showForm" />
+          <span class="toggle-color" style="background: #4caf50"></span>
+          <span class="toggle-label">Form</span>
+        </label>
       </div>
 
       <!-- Stats Summary -->
@@ -371,9 +437,9 @@ function renderChart() {
           <div v-if="hoveredPoint" class="hover-details">
             <strong>{{ hoveredPoint.date }}</strong>
             <div class="hover-stats">
-              <span class="ctl">CTL: {{ hoveredPoint.ctl }}</span>
-              <span class="atl">ATL: {{ hoveredPoint.atl }}</span>
-              <span class="tsb">TSB: {{ hoveredPoint.tsb }}</span>
+              <span v-if="showFitness" class="ctl">Fitness: {{ hoveredPoint.ctl }}</span>
+              <span v-if="showFatigue" class="atl">Fatigue: {{ hoveredPoint.atl }}</span>
+              <span v-if="showForm" class="tsb">Form: {{ hoveredPoint.tsb }}</span>
               <span class="load">Load: {{ hoveredPoint.load }}</span>
             </div>
           </div>
@@ -386,39 +452,43 @@ function renderChart() {
       <!-- Form Zones Explanation -->
       <div class="section">
         <h2 class="section-title">Understanding Your Form</h2>
+        <p class="section-description">
+          Your current Form is <strong :style="{ color: formStatus.color }">{{ stats.currentForm }}</strong>
+          ({{ formStatus.label }}).
+        </p>
         <div class="form-zones">
-          <div class="zone-item">
+          <div class="zone-item" :class="{ 'zone-active': stats.currentForm >= 25 }">
             <span class="zone-color" style="background: #9c27b0"></span>
             <div class="zone-info">
-              <strong>Transition (TSB &gt; 25)</strong>
+              <strong>Transition (Form &gt; 25)</strong>
               <span>Losing fitness, too much rest</span>
             </div>
           </div>
-          <div class="zone-item">
+          <div class="zone-item" :class="{ 'zone-active': stats.currentForm >= 5 && stats.currentForm < 25 }">
             <span class="zone-color" style="background: #4caf50"></span>
             <div class="zone-info">
-              <strong>Fresh (TSB 5 to 25)</strong>
+              <strong>Fresh (Form 5 to 25)</strong>
               <span>Well recovered, ready for hard efforts</span>
             </div>
           </div>
-          <div class="zone-item">
+          <div class="zone-item" :class="{ 'zone-active': stats.currentForm >= -10 && stats.currentForm < 5 }">
             <span class="zone-color" style="background: #ff9800"></span>
             <div class="zone-info">
-              <strong>Grey Zone (TSB -10 to 5)</strong>
+              <strong>Grey Zone (Form -10 to 5)</strong>
               <span>Moderate fatigue, training normally</span>
             </div>
           </div>
-          <div class="zone-item">
+          <div class="zone-item" :class="{ 'zone-active': stats.currentForm >= -25 && stats.currentForm < -10 }">
             <span class="zone-color" style="background: #2196f3"></span>
             <div class="zone-info">
-              <strong>Optimal (TSB -25 to -10)</strong>
+              <strong>Optimal (Form -25 to -10)</strong>
               <span>Building fitness, manageable fatigue</span>
             </div>
           </div>
-          <div class="zone-item">
+          <div class="zone-item" :class="{ 'zone-active': stats.currentForm < -25 }">
             <span class="zone-color" style="background: #f44336"></span>
             <div class="zone-info">
-              <strong>Overreaching (TSB &lt; -25)</strong>
+              <strong>Overreaching (Form &lt; -25)</strong>
               <span>High fatigue, risk of overtraining</span>
             </div>
           </div>
@@ -451,9 +521,51 @@ function renderChart() {
   margin: 0;
 }
 
+.header-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .time-range-selector {
   display: flex;
   gap: 0.5rem;
+}
+
+.line-toggles {
+  display: flex;
+  gap: 1.5rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.toggle-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.toggle-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.toggle-label {
+  font-size: 0.875rem;
+  color: #333;
 }
 
 .range-btn {
@@ -560,6 +672,12 @@ function renderChart() {
   margin: 0 0 1rem 0;
 }
 
+.section-description {
+  font-size: 0.875rem;
+  color: #666;
+  margin: 0 0 1rem 0;
+}
+
 .form-zones {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -573,6 +691,13 @@ function renderChart() {
   padding: 0.75rem;
   background: #f9f9f9;
   border-radius: 8px;
+  border: 2px solid transparent;
+  transition: border-color 0.2s;
+}
+
+.zone-item.zone-active {
+  border-color: #fc4c02;
+  background: #fff8f5;
 }
 
 .zone-color {
