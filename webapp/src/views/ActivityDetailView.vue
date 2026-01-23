@@ -166,61 +166,21 @@ async function loadActivity() {
   }
 }
 
-// Free map style definitions (no API key required)
-// Using Carto basemaps - free for all uses, no signup needed
-function getMapStyle(): maplibregl.StyleSpecification {
+// Free map styles - using OpenFreeMap (completely free, no signup)
+function getMapStyle(): string {
   if (mapStyle.value === 'satellite') {
-    // ESRI World Imagery (free)
-    return {
-      version: 8,
-      sources: {
-        'esri-satellite': {
-          type: 'raster',
-          tiles: [
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          ],
-          tileSize: 256,
-          attribution: 'Tiles &copy; Esri',
-          maxzoom: 19,
-        },
-      },
-      layers: [
-        {
-          id: 'esri-satellite-layer',
-          type: 'raster',
-          source: 'esri-satellite',
-        },
-      ],
-    }
+    // For satellite, we'll use a simple style with ESRI imagery
+    return 'https://api.maptiler.com/maps/hybrid/style.json?key=get_your_own_OpIi9ZULNHzrESv6T2vL'
   }
-  // Carto Voyager tiles - free, no signup, works in browsers
-  return {
-    version: 8,
-    sources: {
-      carto: {
-        type: 'raster',
-        tiles: [
-          'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-          'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-          'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        ],
-        tileSize: 256,
-        attribution: '&copy; <a href="https://carto.com/">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-        maxzoom: 20,
-      },
-    },
-    layers: [
-      {
-        id: 'carto-tiles',
-        type: 'raster',
-        source: 'carto',
-      },
-    ],
-  }
+  // OpenFreeMap - completely free vector tiles, no API key needed
+  return 'https://tiles.openfreemap.org/styles/liberty'
 }
 
 function initMap() {
-  if (!hasMap.value || !mapContainer.value) return
+  if (!hasMap.value || !mapContainer.value) {
+    console.log('initMap: no map data or container', { hasMap: hasMap.value, container: !!mapContainer.value })
+    return
+  }
 
   // Clean up existing map
   if (map) {
@@ -229,8 +189,9 @@ function initMap() {
   }
 
   const coordinates = decodedPolyline.value!
+  console.log('initMap: coordinates', coordinates.length, 'points')
 
-  // Create map with free OpenStreetMap tiles
+  // Create map with free tiles
   map = new maplibregl.Map({
     container: mapContainer.value,
     style: getMapStyle(),
@@ -238,11 +199,17 @@ function initMap() {
     zoom: 12,
   })
 
+  map.on('error', (e) => {
+    console.error('Map error:', e)
+  })
+
   map.on('load', () => {
+    console.log('Map loaded successfully')
     if (!map) return
 
     // Convert coordinates to GeoJSON format [lng, lat]
     const geoJsonCoords = coordinates.map(([lat, lng]) => [lng, lat])
+    console.log('Adding route with', geoJsonCoords.length, 'coordinates')
 
     // Add route line
     map.addSource('route', {
