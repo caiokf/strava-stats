@@ -127,7 +127,18 @@ function renderChart() {
   svg.attr('width', width).attr('height', height)
 
   // Prepare data for treemap
-  const data = {
+  interface TreemapNode {
+    name: string
+    value: number
+    sport: SportStats
+  }
+
+  interface TreemapData {
+    name: string
+    children: TreemapNode[]
+  }
+
+  const data: TreemapData = {
     name: 'sports',
     children: sportsBreakdown.value.map((sport) => ({
       name: sport.sportType,
@@ -139,15 +150,20 @@ function renderChart() {
   // Create treemap layout
   const root = d3
     .hierarchy(data)
-    .sum((d: unknown) => (d as { value?: number }).value ?? 0)
+    .sum((d) => (d as unknown as TreemapNode).value ?? 0)
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
 
-  d3.treemap<typeof data>().size([width, height]).padding(3).round(true)(root)
+  const treemapLayout = d3.treemap<TreemapData>().size([width, height]).padding(3).round(true)
+  treemapLayout(root)
+
+  // Get leaves with rectangle properties
+  type TreemapLeaf = d3.HierarchyRectangularNode<TreemapData>
+  const leaves = root.leaves() as TreemapLeaf[]
 
   // Create cell groups
   const cell = svg
     .selectAll('g')
-    .data(root.leaves())
+    .data(leaves)
     .enter()
     .append('g')
     .attr('transform', (d) => `translate(${d.x0},${d.y0})`)
@@ -157,7 +173,7 @@ function renderChart() {
     .append('rect')
     .attr('width', (d) => d.x1 - d.x0)
     .attr('height', (d) => d.y1 - d.y0)
-    .attr('fill', (d) => colorScale((d.data as { name: string }).name))
+    .attr('fill', (d) => colorScale((d.data as unknown as TreemapNode).name))
     .attr('fill-opacity', 0.85)
     .attr('stroke', '#fff')
     .attr('stroke-width', 2)
@@ -165,7 +181,7 @@ function renderChart() {
     .style('cursor', 'pointer')
     .on('mouseover', function (event, d) {
       d3.select(this).attr('fill-opacity', 1)
-      const sportData = (d.data as { sport?: SportStats }).sport
+      const sportData = (d.data as unknown as TreemapNode).sport
       if (sportData) {
         selectedSport.value = sportData
       }
@@ -192,7 +208,7 @@ function renderChart() {
     .text((d) => {
       const cellWidth = d.x1 - d.x0
       if (cellWidth < 60) return ''
-      return (d.data as { name: string }).name
+      return (d.data as unknown as TreemapNode).name
     })
     .style('pointer-events', 'none')
 
@@ -212,7 +228,7 @@ function renderChart() {
     .text((d) => {
       const cellWidth = d.x1 - d.x0
       if (cellWidth < 80) return ''
-      return formatMetricValue((d.data as { value: number }).value)
+      return formatMetricValue((d.data as unknown as TreemapNode).value)
     })
     .style('pointer-events', 'none')
 
@@ -232,7 +248,7 @@ function renderChart() {
       const cellWidth = d.x1 - d.x0
       const cellHeight = d.y1 - d.y0
       if (cellWidth < 80 || cellHeight < 80) return ''
-      return getSportIcon((d.data as { name: string }).name)
+      return getSportIcon((d.data as unknown as TreemapNode).name)
     })
     .style('pointer-events', 'none')
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import * as d3 from 'd3'
 import * as L from 'leaflet'
 import polyline from '@mapbox/polyline'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
@@ -8,6 +9,32 @@ import { getActivityById } from '@/services/activitiesService'
 import { formatDistance, formatDuration, formatElevation, formatPace } from '@/lib/aggregations'
 import type { Activity } from '@/types/activity'
 import 'leaflet/dist/leaflet.css'
+
+interface RawLap {
+  id: number
+  name: string
+  lap_index: number
+  distance: number
+  moving_time: number
+  elapsed_time: number
+  average_speed: number
+  max_speed: number
+  average_watts?: number
+  average_cadence?: number
+  average_heartrate?: number
+  max_heartrate?: number
+  total_elevation_gain?: number
+}
+
+interface RawSplit {
+  split: number
+  distance: number
+  moving_time: number
+  elapsed_time: number
+  average_speed: number
+  elevation_difference?: number
+  average_heartrate?: number
+}
 
 const route = useRoute()
 const router = useRouter()
@@ -19,8 +46,10 @@ const error = ref<string | null>(null)
 const mapContainer = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
 
-const elevationSvgRef = ref<SVGSVGElement | null>(null)
-const elevationDimensions = ref({ width: 0, height: 0 })
+const lapsChartRef = ref<SVGSVGElement | null>(null)
+const lapsChartDimensions = ref({ width: 0, height: 0 })
+
+const selectedLapsMetric = ref<'power' | 'speed' | 'heartrate'>('power')
 
 const activityId = computed(() => {
   const id = route.params.id
@@ -74,6 +103,27 @@ const decodedPolyline = computed(() => {
 
 const hasMap = computed(() => decodedPolyline.value && decodedPolyline.value.length > 0)
 
+// Extract laps from raw_data
+const laps = computed((): RawLap[] => {
+  if (!activity.value?.raw_data) return []
+  const rawData = activity.value.raw_data as { laps?: RawLap[] }
+  return rawData.laps || []
+})
+
+// Extract splits from raw_data
+const splits = computed((): RawSplit[] => {
+  if (!activity.value?.raw_data) return []
+  const rawData = activity.value.raw_data as { splits_metric?: RawSplit[] }
+  return rawData.splits_metric || []
+})
+
+const hasLaps = computed(() => laps.value.length > 1)
+const hasSplits = computed(() => splits.value.length > 1)
+
+// Check if laps have power data
+const lapsHavePower = computed(() => laps.value.some((lap) => lap.average_watts !== undefined))
+const lapsHaveHeartrate = computed(() => laps.value.some((lap) => lap.average_heartrate !== undefined))
+
 async function loadActivity() {
   if (!activityId.value) {
     error.value = 'Invalid activity ID'
@@ -90,8 +140,21 @@ async function loadActivity() {
       error.value = 'Activity not found'
     } else {
       activity.value = data
+      // Set default metric based on available data
+      if (data.raw_data) {
+        const rawData = data.raw_data as { laps?: RawLap[] }
+        const rawLaps = rawData.laps || []
+        if (rawLaps.some((l) => l.average_watts)) {
+          selectedLapsMetric.value = 'power'
+        } else if (rawLaps.some((l) => l.average_heartrate)) {
+          selectedLapsMetric.value = 'heartrate'
+        } else {
+          selectedLapsMetric.value = 'speed'
+        }
+      }
       await nextTick()
       initMap()
+      onLapsChartResize()
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to load activity'
@@ -164,23 +227,133 @@ function initMap() {
   map.fitBounds(routeLine.getBounds(), { padding: [20, 20] })
 }
 
-function onElevationResize() {
-  if (!elevationSvgRef.value) return
-  const rect = elevationSvgRef.value.parentElement?.getBoundingClientRect()
+function onLapsChartResize() {
+  if (!lapsChartRef.value) return
+  const rect = lapsChartRef.value.parentElement?.getBoundingClientRect()
   if (rect) {
-    elevationDimensions.value = { width: rect.width, height: 150 }
-    renderElevationChart()
+    lapsChartDimensions.value = { width: rect.width, height: 200 }
+    renderLapsChart()
   }
 }
 
-function renderElevationChart() {
-  // This would be enhanced with actual elevation data from streams
-  // For now we show a placeholder or skip
+function renderLapsChart() {
+  if (!lapsChartRef.value || laps.value.length === 0) return
+
+  const { width, height } = lapsChartDimensions.value
+  if (width === 0 || height === 0) return
+
+  const svg = d3.select(lapsChartRef.value)
+  svg.selectAll('*').remove()
+
+  svg.attr('width', width).attr('height', height)
+
+  const margin = { top: 20, right: 20, bottom: 40, left: 50 }
+  const chartWidth = width - margin.left - margin.right
+  const chartHeight = height - margin.top - margin.bottom
+
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`)
+
+  // Get metric values
+  const getMetricValue = (lap: RawLap): number => {
+    switch (selectedLapsMetric.value) {
+      case 'power':
+        return lap.average_watts || 0
+      case 'heartrate':
+        return lap.average_heartrate || 0
+      case 'speed':
+        return lap.average_speed * 3.6 // Convert m/s to km/h
+      default:
+        return 0
+    }
+  }
+
+  const data = laps.value.map((lap, i) => ({
+    index: i + 1,
+    value: getMetricValue(lap),
+    lap,
+  }))
+
+  // Scales
+  const x = d3
+    .scaleBand()
+    .domain(data.map((d) => d.index.toString()))
+    .range([0, chartWidth])
+    .padding(0.2)
+
+  const maxVal = d3.max(data, (d) => d.value) || 0
+  const y = d3.scaleLinear().domain([0, maxVal * 1.1]).range([chartHeight, 0])
+
+  // Bars
+  g.selectAll('.bar')
+    .data(data)
+    .enter()
+    .append('rect')
+    .attr('class', 'bar')
+    .attr('x', (d) => x(d.index.toString()) || 0)
+    .attr('y', (d) => y(d.value))
+    .attr('width', x.bandwidth())
+    .attr('height', (d) => chartHeight - y(d.value))
+    .attr('fill', '#fc4c02')
+    .attr('rx', 2)
+
+  // Value labels on bars
+  g.selectAll('.bar-label')
+    .data(data)
+    .enter()
+    .append('text')
+    .attr('class', 'bar-label')
+    .attr('x', (d) => (x(d.index.toString()) || 0) + x.bandwidth() / 2)
+    .attr('y', (d) => y(d.value) - 5)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '10px')
+    .attr('fill', '#666')
+    .text((d) => {
+      if (d.value === 0) return ''
+      if (selectedLapsMetric.value === 'power') return `${Math.round(d.value)}W`
+      if (selectedLapsMetric.value === 'heartrate') return `${Math.round(d.value)}`
+      return `${d.value.toFixed(1)}`
+    })
+
+  // X axis
+  g.append('g')
+    .attr('transform', `translate(0,${chartHeight})`)
+    .call(d3.axisBottom(x).tickFormat((d) => `Lap ${d}`))
+    .selectAll('text')
+    .attr('font-size', '10px')
+    .attr('transform', 'rotate(-45)')
+    .attr('text-anchor', 'end')
+    .attr('dx', '-0.5em')
+    .attr('dy', '0.5em')
+
+  // Y axis
+  g.append('g')
+    .call(
+      d3.axisLeft(y).ticks(5).tickFormat((d) => {
+        if (selectedLapsMetric.value === 'power') return `${d}W`
+        if (selectedLapsMetric.value === 'heartrate') return `${d}`
+        return `${d} km/h`
+      }),
+    )
+    .selectAll('text')
+    .attr('font-size', '10px')
+}
+
+watch(selectedLapsMetric, () => {
+  renderLapsChart()
+})
+
+function formatSplitPace(speedMps: number): string {
+  // Convert m/s to min/km
+  if (speedMps <= 0) return '-'
+  const paceSecondsPerKm = 1000 / speedMps
+  const minutes = Math.floor(paceSecondsPerKm / 60)
+  const seconds = Math.round(paceSecondsPerKm % 60)
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
 onMounted(() => {
   loadActivity()
-  window.addEventListener('resize', onElevationResize)
+  window.addEventListener('resize', onLapsChartResize)
 })
 
 onUnmounted(() => {
@@ -188,7 +361,7 @@ onUnmounted(() => {
     map.remove()
     map = null
   }
-  window.removeEventListener('resize', onElevationResize)
+  window.removeEventListener('resize', onLapsChartResize)
 })
 
 watch(activityId, () => {
@@ -299,6 +472,115 @@ function goBack() {
           <p class="no-map-text">No route data available for this activity</p>
         </div>
 
+        <!-- Elevation Summary -->
+        <div v-if="activity.elev_high != null || activity.total_elevation_gain" class="section">
+          <h2 class="section-title">Elevation</h2>
+          <div class="elevation-summary">
+            <div class="elevation-stat" v-if="activity.total_elevation_gain">
+              <span class="elevation-value">{{ formatElevation(activity.total_elevation_gain) }}</span>
+              <span class="elevation-label">Total Gain</span>
+            </div>
+            <div class="elevation-stat" v-if="activity.elev_high != null">
+              <span class="elevation-value">{{ formatElevation(activity.elev_high!) }}</span>
+              <span class="elevation-label">Max Elevation</span>
+            </div>
+            <div class="elevation-stat" v-if="activity.elev_low != null">
+              <span class="elevation-value">{{ formatElevation(activity.elev_low!) }}</span>
+              <span class="elevation-label">Min Elevation</span>
+            </div>
+            <div class="elevation-stat" v-if="activity.elev_high != null && activity.elev_low != null">
+              <span class="elevation-value">{{ formatElevation(activity.elev_high! - activity.elev_low!) }}</span>
+              <span class="elevation-label">Elevation Range</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Laps Chart -->
+        <div v-if="hasLaps" class="section">
+          <div class="section-header">
+            <h2 class="section-title">Laps</h2>
+            <div class="metric-selector">
+              <button
+                v-if="lapsHavePower"
+                class="metric-btn"
+                :class="{ active: selectedLapsMetric === 'power' }"
+                @click="selectedLapsMetric = 'power'"
+              >
+                Power
+              </button>
+              <button
+                class="metric-btn"
+                :class="{ active: selectedLapsMetric === 'speed' }"
+                @click="selectedLapsMetric = 'speed'"
+              >
+                Speed
+              </button>
+              <button
+                v-if="lapsHaveHeartrate"
+                class="metric-btn"
+                :class="{ active: selectedLapsMetric === 'heartrate' }"
+                @click="selectedLapsMetric = 'heartrate'"
+              >
+                Heart Rate
+              </button>
+            </div>
+          </div>
+          <div class="laps-chart-container">
+            <svg ref="lapsChartRef"></svg>
+          </div>
+          <div class="laps-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Lap</th>
+                  <th>Distance</th>
+                  <th>Time</th>
+                  <th>Speed</th>
+                  <th v-if="lapsHavePower">Power</th>
+                  <th v-if="lapsHaveHeartrate">HR</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="lap in laps" :key="lap.id">
+                  <td>{{ lap.lap_index }}</td>
+                  <td>{{ formatDistance(lap.distance) }}</td>
+                  <td>{{ formatDuration(lap.moving_time) }}</td>
+                  <td>{{ (lap.average_speed * 3.6).toFixed(1) }} km/h</td>
+                  <td v-if="lapsHavePower">{{ lap.average_watts ? `${Math.round(lap.average_watts)}W` : '-' }}</td>
+                  <td v-if="lapsHaveHeartrate">{{ lap.average_heartrate ? `${Math.round(lap.average_heartrate)} bpm` : '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Splits -->
+        <div v-if="hasSplits" class="section">
+          <h2 class="section-title">Splits (per km)</h2>
+          <div class="splits-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>km</th>
+                  <th>Pace</th>
+                  <th>Elev</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="split in splits" :key="split.split">
+                  <td>{{ split.split }}</td>
+                  <td class="pace-cell">{{ formatSplitPace(split.average_speed) }} /km</td>
+                  <td :class="{ 'elev-up': (split.elevation_difference || 0) > 0, 'elev-down': (split.elevation_difference || 0) < 0 }">
+                    {{ split.elevation_difference !== undefined ? `${split.elevation_difference > 0 ? '+' : ''}${split.elevation_difference.toFixed(0)}m` : '-' }}
+                  </td>
+                  <td>{{ formatDuration(split.moving_time) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <!-- Additional Details -->
         <div class="section">
           <h2 class="section-title">Activity Details</h2>
@@ -327,13 +609,13 @@ function goBack() {
               <span class="detail-label">PRs</span>
               <span class="detail-value">{{ activity.pr_count }}</span>
             </div>
-            <div v-if="activity.elev_high !== undefined" class="detail-item">
+            <div v-if="activity.elev_high != null" class="detail-item">
               <span class="detail-label">Max Elevation</span>
-              <span class="detail-value">{{ formatElevation(activity.elev_high) }}</span>
+              <span class="detail-value">{{ formatElevation(activity.elev_high!) }}</span>
             </div>
-            <div v-if="activity.elev_low !== undefined" class="detail-item">
+            <div v-if="activity.elev_low != null" class="detail-item">
               <span class="detail-label">Min Elevation</span>
-              <span class="detail-value">{{ formatElevation(activity.elev_low) }}</span>
+              <span class="detail-value">{{ formatElevation(activity.elev_low!) }}</span>
             </div>
             <div v-if="activity.weighted_average_watts" class="detail-item">
               <span class="detail-label">Normalized Power</span>
@@ -552,6 +834,137 @@ function goBack() {
   color: #999;
   font-style: italic;
   margin: 0;
+}
+
+/* Elevation Summary */
+.elevation-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 1rem;
+}
+
+.elevation-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1rem;
+  background: #f9f9f9;
+  border-radius: 8px;
+}
+
+.elevation-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.elevation-label {
+  font-size: 0.75rem;
+  color: #666;
+  text-transform: uppercase;
+  margin-top: 0.25rem;
+}
+
+/* Section Header */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.section-header .section-title {
+  margin: 0;
+}
+
+/* Metric Selector */
+.metric-selector {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.metric-btn {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.metric-btn:hover {
+  border-color: #fc4c02;
+}
+
+.metric-btn.active {
+  background: #fc4c02;
+  border-color: #fc4c02;
+  color: #fff;
+}
+
+/* Laps Chart */
+.laps-chart-container {
+  width: 100%;
+  height: 200px;
+  margin-bottom: 1rem;
+}
+
+.laps-chart-container svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Tables */
+.laps-table,
+.splits-table {
+  overflow-x: auto;
+}
+
+.laps-table table,
+.splits-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.laps-table th,
+.splits-table th {
+  text-align: left;
+  padding: 0.75rem 0.5rem;
+  border-bottom: 2px solid #e0e0e0;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.laps-table td,
+.splits-table td {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  color: #1a1a2e;
+}
+
+.laps-table tr:hover,
+.splits-table tr:hover {
+  background: #f9f9f9;
+}
+
+.pace-cell {
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.elev-up {
+  color: #4caf50;
+}
+
+.elev-down {
+  color: #f44336;
 }
 
 /* Details Grid */

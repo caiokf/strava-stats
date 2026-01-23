@@ -27,18 +27,24 @@ export interface Activity {
   private: boolean | null
   flagged: boolean | null
   gear_id: string | null
+  gear_name?: string | null
+  device_name?: string | null
   average_speed: number | null
   max_speed: number | null
   average_cadence: number | null
   average_watts: number | null
   weighted_average_watts: number | null
+  max_watts?: number | null
   kilojoules: number | null
   device_watts: boolean | null
   has_heartrate: boolean | null
   average_heartrate: number | null
   max_heartrate: number | null
+  elev_high?: number | null
+  elev_low?: number | null
   calories: number | null
   suffer_score: number | null
+  pr_count?: number | null
   description: string | null
   workout_type: number | null
   raw_data: Record<string, unknown> | null

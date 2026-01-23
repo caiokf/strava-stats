@@ -341,13 +341,16 @@ function getIcon(iconName: string): string {
 .main-content {
   flex: 1;
   margin-left: 250px;
-  padding: 1.5rem;
-  transition: margin-left 0.3s ease;
+  width: calc(100% - 250px);
+  padding: 2rem;
+  transition: margin-left 0.3s ease, width 0.3s ease;
   min-height: 100vh;
+  min-width: 0; /* Prevent flex item from overflowing */
 }
 
 .main-content.sidebar-collapsed {
   margin-left: 70px;
+  width: calc(100% - 70px);
 }
 
 /* Responsive */
@@ -379,12 +382,14 @@ function getIcon(iconName: string): string {
 
   .main-content {
     margin-left: 0;
+    width: 100%;
     margin-top: 56px;
     padding: 1rem;
   }
 
   .main-content.sidebar-collapsed {
     margin-left: 0;
+    width: 100%;
   }
 }
 </style>

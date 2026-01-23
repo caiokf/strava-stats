@@ -8,6 +8,7 @@ import {
   getDistinctSportTypes as fetchSportTypes,
   type PaginatedResult,
 } from '@/services/activitiesService'
+import { useToastStore } from './toast'
 
 export const useActivitiesStore = defineStore('activities', () => {
   // State
@@ -96,7 +97,10 @@ export const useActivitiesStore = defineStore('activities', () => {
       totalCount.value = result.count
       hasMore.value = result.hasMore
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load activities'
+      const errorMsg = e instanceof Error ? e.message : 'Failed to load activities'
+      error.value = errorMsg
+      const toast = useToastStore()
+      toast.error(errorMsg)
     } finally {
       loading.value = false
     }
@@ -116,8 +120,11 @@ export const useActivitiesStore = defineStore('activities', () => {
     try {
       currentActivity.value = await fetchActivityById(id)
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load activity'
+      const errorMsg = e instanceof Error ? e.message : 'Failed to load activity'
+      error.value = errorMsg
       currentActivity.value = null
+      const toast = useToastStore()
+      toast.error(errorMsg)
     } finally {
       loadingActivity.value = false
     }
@@ -132,7 +139,10 @@ export const useActivitiesStore = defineStore('activities', () => {
     try {
       allActivities.value = await fetchAllActivities()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load all activities'
+      const errorMsg = e instanceof Error ? e.message : 'Failed to load all activities'
+      error.value = errorMsg
+      const toast = useToastStore()
+      toast.error(errorMsg)
     } finally {
       loadingAll.value = false
     }
