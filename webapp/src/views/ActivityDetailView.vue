@@ -156,7 +156,7 @@ async function loadActivity() {
         }
       }
       await nextTick()
-      initMap()
+      // Map will be initialized by the watcher when container is ready
       onLapsChartResize()
     }
   } catch (e) {
@@ -494,6 +494,14 @@ function renderLapsChart() {
 
 watch(selectedLapsMetric, () => {
   renderLapsChart()
+})
+
+// Watch for map container to become available (after v-if renders it)
+watch(mapContainer, (container) => {
+  if (container && hasMap.value && !map) {
+    console.log('mapContainer watch: container now available, initializing map')
+    initMap()
+  }
 })
 
 function formatSplitPace(speedMps: number): string {
